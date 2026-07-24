@@ -2,11 +2,12 @@
 
 ## Product Specifications
 
-Before any task in this repository, use the `$specs-author` skill to read the root `SPECS.md`. Use `$specs-author` whenever reading or writing `SPECS.md`.
+Before every task in this repository, use the `$specs-author` skill to read the entire root `SPECS.md`. Before finishing, reread it and check the task and conversation for new or changed stakeholder intent.
 
-- Do not knowingly make or recommend a change that violates an applicable requirement in `SPECS.md`.
-- If an existing spec violation is found, the requested work would infringe a requirement, `SPECS.md` is missing when one should exist, or a requirement is missing or unclear, report the issue and propose a scoped rectification or clarification task.
-- Ask for explicit user permission before editing `SPECS.md` or starting any rectification or clarification task that is not already explicitly requested. Continue the original task only when it can be completed without violating the current spec; otherwise stop and request direction.
+- Treat `SPECS.md` as the persistent source of stakeholder requirements that cannot be inferred reliably from code or remembered conversations.
+- If the task, repository, or user request contradicts, omits, or ambiguously interprets the specification, tell the user. Continue safe exploration and work that does not depend on resolving the issue, but never silently choose an interpretation.
+- Never edit `SPECS.md` from inference. Propose the exact change, explain why it reflects stakeholder intent, and edit the file only after the user explicitly approves that exact change.
+- Keep `SPECS.md` complete, concise, and compacted. It must contain stakeholder intent rather than implementation, architecture, operations, or transient project detail.
 
 ## GPU Instances
 
@@ -29,7 +30,6 @@ When running or changing fleet shepherd behavior, make unused host runtime-image
 
 - When asked to launch, run, start, execute, or monitor a queue-backed training recipe, use the project-level `$launch-experiment` skill in `.codex/skills/launch-experiment`. It defaults to `beast-3`, reports the W&B URL as soon as it appears, monitors compactly, and delegates active-run potential-bug diagnosis to the read-only `training_run_investigator` custom agent. Its default mode is observation-only; explicit user authorization enables its evidence-preserving repair mode.
 - When asked to tune or optimize a checked-in SB3 PPO/A2C recipe for sample efficiency and stability across training seeds, use the project-level `$autoresearch` skill in `.codex/skills/autoresearch`. It runs a bounded training-only 20%/50% fixed-rung search, launches no checkpoint evaluations, confirms the winner from five untouched full-cap training seeds, and patches only the pointed leaf recipe. Its result is training-signal-confirmed, not checkpoint-promoted or goal-accepted.
-- When asked to repeatedly stress-test and repair the complete queue-backed experiment lifecycle, use the project-level `$harden-fleet-lifecycle` skill in `.codex/skills/harden-fleet-lifecycle`. It dispatches or resumes a persistent goal, gates on one bounded Mario run, then exercises concurrent Level1-1 through Level1-4 PPO matrix cycles and requires three consecutive clean cycles after the last repair.
 - Active research goal contracts live under goal-scoped folders in `experiments/goals/`. For current Mario Level1-1 work, read `experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml` before choosing recipes, caps, metrics, or promotion criteria. Seed ranges are owned by `rlab.seeds`, not goal files.
 - Launchable recipes live under their owning active goal's `recipes/` directory and may inherit reusable defaults from `experiments/recipes/_presets/`. Legacy goal-local `decisions/`, `reports/`, `best.yml`, and old `experiments/history/` artifacts live under repo-root `.deprecated/` with their source-relative folder structure. That directory is gitignored and should be treated only as historical context about past experiments, not as active contract, recipe, or promotion state.
 - Keep generated artifacts out of source control; use `runs/`, `logs/`, and `models/`.

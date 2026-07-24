@@ -160,11 +160,15 @@ or learner exit. Publication is complete only when the W&B artifact API confirms
 membership and Fleet atomically stores its concrete `vN` receipt with the mailbox cursor commit.
 Promotion uses a monotonically increasing database revision and a separate receipt, so playback can
 prefer the highest visible promotion and safely fall back to the newest visible playable artifact.
-The publisher manager starts exactly one persistent isolated W&B SDK owner for each active run; its
-concurrency is independent of the 10-call Modal limit. The actor survives idle producer gaps,
-drains up to 20 ordered durable batches per claim, and rechecks remotely submitted cursors after
-five seconds. A publishing stage that makes no progress for two minutes is terminated and retried
-from durable state. Session close emits a liveness heartbeat and has a separate five-minute
+The publisher manager starts exactly one persistent isolated W&B SDK owner for each active run; the
+manager performs only database materialization and read-only scheduling and never opens a competing
+SDK session. Actor concurrency is capped at 16 and independent of the 10-call Modal limit.
+W&B-enabled admission fails while all 16 actor slots are occupied. Each actor consumes at most 64
+canonical source events per pass, retains at most 256 unverified rows, claims at most 32, and
+enqueues at no more than five rows per second. It rechecks only the next 256-row unresolved suffix
+after five seconds; verified prefixes are never rescanned. A publishing stage that makes no progress
+for two minutes is terminated and retried from durable state. Session close emits a liveness
+heartbeat and has a separate five-minute
 absolute deadline so W&B's bounded internal retries are not mistaken for a dead actor. Manager and
 child source fingerprints must match, unexpected child exits make readiness unhealthy, and
 verified PostgreSQL TLS resolves an explicit root certificate or the pinned certifi bundle before
@@ -174,7 +178,9 @@ retain their mailbox payloads, and can re-arm only residual batches with
 `rlab experiment retry-finalization --run <run-id>`. That explicit replay is at-least-once because
 W&B cannot atomically commit history and summary cursors. Publisher work never blocks eval
 reconciliation or stop delivery; publication completion and failure remain durable
-finalization-only state. A lifetime actor advisory lock plus
+finalization-only state. Independent `history`, `artifacts`, and `terminal` components feed one
+aggregate reducer; one component cannot erase another component's failure. A lifetime actor
+advisory lock plus
 the narrower per-session lock prevent duplicate owners or interleaved writers after a manager or Mac
 restart. Neon queue and mailbox connections use TCP keepalives and a 30-second user timeout
 so a laptop sleep or network transition fails the pass promptly and is retried with a fresh
@@ -513,9 +519,17 @@ committed before remote I/O; receipts are committed only after full object readb
 transactions are never held during remote archive or W&B operations. Archive, W&B, and artifact
 recovery have separate bounded executors, per-run/global budgets, round-robin fairness, poison
 isolation, progress watermarks, and watchdog state. An ambiguous W&B SDK return remains ambiguous
-until an unsampled exact prefix read verifies stable identities and digests. Any foreign writer,
+for 30 seconds, after which only its unresolved suffix is inspected. A matching contiguous prefix
+is adopted; an absent suffix is retried only when no later remote step exists. Any foreign writer,
 conflict, duplicate, or past-step hole quarantines that generation; repair creates a fresh
-service-owned run and replays from ordinal zero before atomically changing the active pointer.
+service-owned run and replays from canonical cursors before atomically changing the active pointer.
+
+Operational SLOs for the supported 20,000-transition/s learner rate are a warning at 45 seconds of
+latest remotely verified W&B age, a freshness violation at 60 seconds, and terminal drain within
+300 seconds. Terminal completion requires fenced producer cursors, the exact archive root, all
+artifact receipts, a verified close sentinel, remote `finished`, and no later remote `_step`.
+Observe source-event/raw-frame rates, selected/submitted/verified row rates, unconsumed events,
+projection backlog count/age, remotely verified age, and terminal drain duration.
 
 Local control-plane capacity validation on 2026-07-23 exercised 1,000 producers and 10 events per
 producer (10,000 events, the required 10× stream-count stress point). On the development Mac,
@@ -526,6 +540,15 @@ isolation. These are control-plane measurements, not GPU learner-throughput acce
 PostgreSQL URL was present for this verification, so database migration/load acceptance and the
 no-training-throughput-regression canary remain rollout gates; the admission/destructive hold must
 not be released on these local numbers alone.
+
+The 2026-07-24 deterministic telemetry-v2 benchmark modeled 30-second batches containing 100
+history frames at 20,000 learner transitions/s. The legacy per-frame synchronous projector
+published 2.738 rows/s, accumulated 1,500 rows, reached 421.5 seconds maximum backlog age/freshness,
+and drained in 421.5 seconds. The bounded projection selected 0.0333 rows/s from 3.333 exact raw
+frames/s, published 0.0333 rows/s, retained one row, and measured 0.23 seconds maximum
+backlog/freshness and terminal drain. These virtual-time results are reproducible with
+`uv run python -m rlab.telemetry_projection_benchmark`; the live Beast-3 canary result must be
+recorded here before rollout acceptance.
 
 ## Native Vector Runtime V2 Acceptance (2026-07-10)
 

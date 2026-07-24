@@ -174,6 +174,11 @@ class TelemetryBatchTests(unittest.TestCase):
         )
         self.assertIn("'finalization_failed'", statement)
         self.assertIn("s.stream_id LIKE 'artifact-v2-%%'", statement)
+        self.assertIn(
+            "t.telemetry_protocol_version = 1\n"
+            "                OR s.stream_id LIKE 'artifact-v3-%%'",
+            statement,
+        )
 
     def test_finishing_publishers_wait_until_their_retry_deadline(self) -> None:
         conn = mock.MagicMock()
@@ -192,6 +197,11 @@ class TelemetryBatchTests(unittest.TestCase):
         self.assertIn("checkpoint_eval_backend", statement)
         self.assertIn("<> 'modal'", statement)
         self.assertIn("s.stream_id LIKE 'artifact-v2-%%'", statement)
+        self.assertIn(
+            "t.telemetry_protocol_version = 1\n"
+            "                  OR s.stream_id LIKE 'artifact-v3-%%'",
+            statement,
+        )
         self.assertIn(
             "t.status IN ('succeeded', 'failed', 'canceled', 'finalization_failed')",
             statement,

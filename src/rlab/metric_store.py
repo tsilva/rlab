@@ -753,6 +753,23 @@ class MetricStore:
             )
         return cursor.rowcount
 
+    def requeue_uploaded_artifacts_for_recovery(self) -> int:
+        """Recheck staged objects during explicit recovery without changing the ledger."""
+
+        now = time.time()
+        with self.connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE artifact_uploads
+                SET status = 'failed_retryable',
+                    last_error = 'explicit recovery remote recheck',
+                    updated_at = ?
+                WHERE status = 'uploaded'
+                """,
+                (now,),
+            )
+        return cursor.rowcount
+
     def record_checkpoint(
         self,
         *,

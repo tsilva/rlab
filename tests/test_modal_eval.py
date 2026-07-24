@@ -808,6 +808,7 @@ class ModalEvalRecoveryTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         store.reset_interrupted_artifact_uploads.assert_called_once_with()
+        store.requeue_uploaded_artifacts_for_recovery.assert_not_called()
         self.assertEqual(marker.call_count, 2)
         sleep.assert_called_once()
 
@@ -817,7 +818,14 @@ class ModalEvalRecoveryTests(unittest.TestCase):
                 {"status": "running", "eval_run_status": "awaiting_artifact_recovery"},
                 "not terminal",
             ),
-            ({"status": "succeeded", "eval_run_status": "active"}, "not awaiting"),
+            (
+                {
+                    "status": "succeeded",
+                    "eval_run_status": "active",
+                    "missing_artifact_receipts": 0,
+                },
+                "not awaiting",
+            ),
         )
         for state, error in cases:
             with (
@@ -883,6 +891,17 @@ class ModalEvalRecoveryTests(unittest.TestCase):
                 "rlab.telemetry_mailbox.issue_worker_attempt_token",
                 return_value="recovery-token",
             ),
+            mock.patch(
+                "rlab.fleet.load_mailbox_runner_env",
+                return_value={
+                    "WORKER_MAILBOX_DATABASE_URL": "postgresql://mailbox.invalid/rlab",
+                    "AWS_ACCESS_KEY_ID": "access-key",
+                    "AWS_SECRET_ACCESS_KEY": "secret-key",
+                    "AWS_S3_ENDPOINT_URL": "https://objects.invalid",
+                    "AWS_REGION": "auto",
+                    "CHECKPOINT_BUCKET_URI": "s3://checkpoints",
+                },
+            ),
             mock.patch("rlab.workspace_gc.workspace_protocol_mode", return_value="dormant"),
             mock.patch("rlab.docker_host.run_checkpoint_coordinator_container") as recover,
             mock.patch.object(modal_eval_cli, "_kick"),
@@ -894,7 +913,13 @@ class ModalEvalRecoveryTests(unittest.TestCase):
         self.assertEqual(recover.call_args.kwargs["run_name"], "run-13")
         self.assertEqual(recover.call_args.kwargs["runtime_image_ref"], runtime_ref)
         self.assertEqual(recover.call_args.kwargs["attempt_env_path"], "/host/recovery.env")
-        recovery_host.write_attempt_env.assert_called_once()
+        recovery_env = recovery_host.write_attempt_env.call_args.args[1]
+        self.assertEqual(
+            recovery_env["WORKER_MAILBOX_DATABASE_URL"],
+            "postgresql://mailbox.invalid/rlab",
+        )
+        self.assertEqual(recovery_env["RLAB_WORKER_ATTEMPT_TOKEN"], "recovery-token")
+        self.assertTrue(recovery_env["RLAB_WORKER_ATTEMPT_ID"].startswith("checkpoint-recovery-13-"))
         recovery_host.remove_attempt_env.assert_called_once()
         self.assertTrue(any("UPDATE eval_runs" in sql for sql in conn.cursor_obj.executed_sqls))
 
@@ -1651,6 +1676,43 @@ class ModalEvalSchedulingTests(unittest.TestCase):
             statement,
         )
         self.assertIn("THEN 'finalization_failed'", statement)
+
+    def test_legacy_finalization_does_not_require_v2_schema_during_rollout(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.return_value = {"telemetry_evidence_scopes": None}
+        cursor.rowcount = 1
+
+        self.assertEqual(terminalize_runs(conn), 1)
+
+        statements = [call.args[0] for call in cursor.execute.call_args_list]
+        self.assertTrue(any("to_regclass('telemetry_evidence_scopes')" in sql for sql in statements))
+        self.assertFalse(any("JOIN telemetry_evidence_scopes" in sql for sql in statements))
+        self.assertTrue(any("t.telemetry_protocol_version = 1" in sql for sql in statements))
+
+    def test_v2_training_only_finalization_keeps_outcome_null_and_requires_exact_publication(
+        self,
+    ) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.return_value = {"telemetry_evidence_scopes": "telemetry_evidence_scopes"}
+        cursor.rowcount = 0
+
+        terminalize_runs(conn)
+
+        statements = [call.args[0] for call in cursor.execute.call_args_list]
+        statement = next(sql for sql in statements if "t.telemetry_protocol_version=2" in sql)
+        self.assertIn("checkpoint_eval_backend' = 'none'", statement)
+        self.assertIn("r.outcome IS NULL", statement)
+        self.assertIn("t.live_publication_status IN ('complete','disabled')", statement)
+        self.assertIn("FROM telemetry_integrity integrity", statement)
+        self.assertIn("integrity.exact=TRUE", statement)
+        self.assertIn("integrity.classification='intact_with_proof'", statement)
+        self.assertIn("launch.workspace_layout_version IS NOT NULL", statement)
+        self.assertIn("FROM artifact_durability_receipts receipt", statement)
+        self.assertIn("FROM artifact_publication_receipts receipt", statement)
+        self.assertIn("receipt.role='availability'", statement)
+        self.assertIn("r.outcome IS DISTINCT FROM 'accepted'", statement)
 
     def test_artifact_only_finalization_waits_for_complete_durable_stream(self) -> None:
         conn = mock.MagicMock()

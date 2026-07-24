@@ -7,13 +7,12 @@ exact registry entry or a bounded template.
 ## Surfaces and dimensions
 
 - W&B history contains searchable scalar time series and one `eval/full/by_start` table.
-- Metric producers write to a local SQLite outbox, then deliver gzip batches to the transient Neon
-  mailbox. SQLite rows are deleted after Neon acknowledgement and the local database is removed
-  after a successful final-flush barrier. Neon batches are deleted after confirmed W&B publication;
-  neither buffer is permanent metric history.
+- Metric producers write to a local SQLite outbox, then deliver gzip batches to PostgreSQL. Every
+  canonical frame remains exact in PostgreSQL and immutable dual-R2 archives; operational outbox
+  cleanup is governed by archive receipts and exact integrity, never by W&B visibility.
 - Fleet is the sole W&B writer for new `neon_mailbox_v1` runs. Training and evaluation workers never
-  receive W&B credentials. Fleet preassigns the immutable W&B run id, publishes all streams to that
-  run, and stores per-stream commit cursors in the W&B summary before deleting mailbox batches.
+  receive W&B credentials. One advisory-locked actor owns history, summaries, and artifact
+  association for each run; source consumption cursors are durable PostgreSQL state.
 - W&B config contains run-defining dimensions: `metrics_schema_version: 6`, `training_backend_id`,
   `training_backend_config_hash`, `algorithm_id`, goal,
   environment, starts, seed, frame skip, environment count, hyperparameters, eval protocol, and
@@ -26,8 +25,9 @@ exact registry entry or a bounded template.
   `reward_shape_is_default`. Reward-derived returns are comparable only when the selected reward
   semantic identity and effective goal contract match; the readable key alone is not sufficient.
 - `leader/checkpoint/*` contains the selected checkpoint's rank values and provenance.
-- W&B is the permanent metric history. R2 is the permanent byte store for checkpoints, metadata,
-  raw episode evidence, and videos. Postgres retains orchestration state and artifact locations.
+- PostgreSQL plus immutable dual-R2 archives are the permanent exact metric history. W&B is a
+  deterministic, sampled diagnostic projection. R2 also stores checkpoints, metadata, raw episode
+  evidence, and videos.
 
 The active checkpoint protocol is `acceptance`; complete accepted evidence additionally emits the
 `full` metric family. Historical `screen` and `confirm` rows remain readable but are not produced by
@@ -47,10 +47,10 @@ many such trajectory updates were committed.
 
 An episode metric is a **return**. `reward` is reserved for per-step shaping and component
 attribution. `global_step` counts policy environment transitions; frame skip remains run config.
-Fleet never supplies W&B's internal `_step`; W&B assigns it in arrival order. It is not an
-environment-transition or checkpoint count. Charts and evaluation history use explicit
-`global_step` for the x-axis. Asynchronous evaluation rows may arrive after later training rows
-without overwriting them.
+Fleet supplies W&B's internal `_step` only as the projection generation's deterministic output
+ordinal. It is not an environment-transition or checkpoint count. `global_step` is the declared W&B
+step metric for scientific `train/*` and `eval/*` charts. Asynchronous evaluation rows may arrive
+after later training rows without changing their scientific X-axis.
 
 Schemas v4 and v5 are frozen compatibility states. Their removed metrics, historical staged-evaluation
 families, parsing, and projections remain accepted when a run declares the corresponding
@@ -122,6 +122,20 @@ is identified by `_rlab_event_id`, `_rlab_output_index`, `_rlab_output_ordinal`,
 `_rlab_normalization_version`, and `_rlab_projection_generation`. These are projection metadata,
 not scientific metrics. W&B `_step` is the generation offset plus the zero-based output ordinal;
 `global_step` retains its scientific meaning as policy transitions consumed.
+The v2 projector defines `global_step` as the W&B step metric for `train/*` and `eval/*`, so
+automatically generated scientific charts use policy transitions on the X-axis even though the
+append-only projection continues to use `_step` internally for ordering.
+For a canonical metric batch with more than one history frame, normalization v3 projects only the
+latest frame. All original frames remain in the exact Postgres/R2 telemetry ledger; only the
+diagnostic W&B projection is downsampled.
+An empty or non-history-only canonical metric batch emits no W&B history row. Its per-producer
+source cursor still advances atomically, so a zero-output event cannot wedge later metrics.
+
+The bounded projector consumes at most 64 source events per pass, retains at most 256 unverified
+rows, claims at most 32 rows, and enqueues at no more than five rows per second per run. Verification
+reads only the next 256-row unresolved suffix and advances an incremental watermark; verified
+history is never rescanned. W&B freshness warns at 45 seconds, violates its SLO at 60 seconds, and
+terminal drain must finish within 300 seconds for admitted healthy runs.
 
 The canonical identity of every metric, control, command ACK, evaluation result, and terminal close
 is `(train_job_id, telemetry_generation, producer_ordinal, source_sequence)`. The authoritative

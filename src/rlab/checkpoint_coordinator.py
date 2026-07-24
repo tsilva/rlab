@@ -25,7 +25,12 @@ from rlab.modal_eval_protocol import (
     checkpoint_announcement_eval_payload,
     stage_job_descriptor,
 )
-from rlab.modal_eval_storage import ObjectStore, file_sha256, object_store_base_uri
+from rlab.modal_eval_storage import (
+    ObjectNotFound,
+    ObjectStore,
+    file_sha256,
+    object_store_base_uri,
+)
 from rlab.policy_bundle import (
     PolicyDocumentError,
     evaluation_contract_sha256,
@@ -67,6 +72,33 @@ def _load_checkpoint_event(path: Path) -> dict[str, Any]:
     if observed != str(value.get("payload_sha256") or ""):
         raise ValueError(f"checkpoint event outbox payload hash mismatch: {path}")
     return value
+
+
+def _checkpoint_event_objects_available(
+    object_store: ObjectStore,
+    payload: dict[str, Any],
+) -> bool:
+    objects = (
+        (payload.get("model_uri"), payload.get("sha256")),
+        (
+            payload.get("metadata_uri"),
+            payload.get("model_document_sha256") or payload.get("metadata_sha256"),
+        ),
+        (payload.get("recipe_uri"), payload.get("recipe_sha256")),
+    )
+    for uri, expected_sha256 in objects:
+        if not uri:
+            continue
+        try:
+            head = object_store.head(str(uri))
+        except ObjectNotFound:
+            return False
+        if int(head.get("size") or 0) < 1:
+            return False
+        remote_sha256 = str((head.get("metadata") or {}).get("sha256") or "")
+        if object_store.scheme == "s3" and remote_sha256 != str(expected_sha256 or ""):
+            return False
+    return True
 
 
 def prepare_checkpoint_event(
@@ -307,20 +339,24 @@ def process_upload(
     try:
         if ready_event_path.is_file():
             envelope = _load_checkpoint_event(ready_event_path)
-            deliver_checkpoint_event(
-                run_dir,
-                event_id=ready_event_id,
-                event_type="checkpoint_ready",
-                payload=dict(envelope["payload"]),
-                object_store=object_store,
-                telemetry_transport=telemetry_transport,
-            )
-            store.mark_artifact_uploaded(
-                checkpoint_id,
-                artifact_ref=None,
-                storage_uri=str(envelope["payload"].get("model_uri") or ""),
-            )
-            return True
+            if _checkpoint_event_objects_available(
+                object_store,
+                dict(envelope["payload"]),
+            ):
+                deliver_checkpoint_event(
+                    run_dir,
+                    event_id=ready_event_id,
+                    event_type="checkpoint_ready",
+                    payload=dict(envelope["payload"]),
+                    object_store=object_store,
+                    telemetry_transport=telemetry_transport,
+                )
+                store.mark_artifact_uploaded(
+                    checkpoint_id,
+                    artifact_ref=None,
+                    storage_uri=str(envelope["payload"].get("model_uri") or ""),
+                )
+                return True
         sha256 = str(row.get("sha256") or "") or file_sha256(model_path)
         store.set_checkpoint_sha256(checkpoint_id, sha256)
         if not metadata_path.is_file():
@@ -632,6 +668,8 @@ def main(argv: list[str] | None = None) -> int:
     store = MetricStore(metric_store_path(cli.run_dir))
     store.init()
     store.reset_interrupted_artifact_uploads()
+    if cli.recovery_mode:
+        store.requeue_uploaded_artifacts_for_recovery()
     object_store = ObjectStore(_storage_uri(args))
     while True:
         activity = reconcile_orphan_models(store, args, cli.run_dir)

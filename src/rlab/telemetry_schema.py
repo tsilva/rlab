@@ -4,6 +4,8 @@ from __future__ import annotations
 TELEMETRY_V2_TABLES = (
     "telemetry_run_facts",
     "telemetry_evidence_scopes",
+    "wandb_publication_components",
+    "wandb_projection_source_cursors",
     "wandb_projection_rows",
     "wandb_projection_generations",
     "telemetry_recovery_manifests",
@@ -510,14 +512,29 @@ CREATE TABLE IF NOT EXISTS wandb_projection_generations (
   ),
   state TEXT NOT NULL DEFAULT 'pending'
     CHECK (state IN (
-      'pending', 'publishing', 'verifying', 'active', 'sealed',
+      'pending', 'publishing', 'verifying', 'active', 'draining', 'complete', 'sealed',
       'quarantined', 'failed', 'disabled'
     )),
+  protocol_version TEXT NOT NULL DEFAULT 'wandb-generational-projection-v2',
   step_offset BIGINT NOT NULL DEFAULT 0 CHECK (step_offset >= 0),
   next_ordinal BIGINT NOT NULL DEFAULT 0 CHECK (next_ordinal >= 0),
+  submitted_through_ordinal BIGINT NOT NULL DEFAULT -1
+    CHECK (submitted_through_ordinal >= -1),
   verified_through_ordinal BIGINT NOT NULL DEFAULT -1 CHECK (verified_through_ordinal >= -1),
+  source_events_consumed BIGINT NOT NULL DEFAULT 0 CHECK (source_events_consumed >= 0),
+  raw_frames_consumed BIGINT NOT NULL DEFAULT 0 CHECK (raw_frames_consumed >= 0),
+  selected_rows BIGINT NOT NULL DEFAULT 0 CHECK (selected_rows >= 0),
+  projection_chain_sha256 TEXT,
+  close_ordinal BIGINT CHECK (close_ordinal IS NULL OR close_ordinal >= 0),
   incident_id BIGINT REFERENCES telemetry_incidents(id),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_source_at TIMESTAMPTZ,
+  last_submitted_at TIMESTAMPTZ,
+  last_verification_at TIMESTAMPTZ,
+  last_verified_at TIMESTAMPTZ,
+  latest_verified_source_at TIMESTAMPTZ,
+  terminal_started_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ,
   activated_at TIMESTAMPTZ,
   sealed_at TIMESTAMPTZ,
   PRIMARY KEY (train_job_id, projection_generation),
@@ -538,10 +555,14 @@ CREATE TABLE IF NOT EXISTS wandb_projection_rows (
   payload_sha256 TEXT NOT NULL CHECK (payload_sha256 ~ '^[0-9a-f]{64}$'),
   payload_json JSONB NOT NULL,
   state TEXT NOT NULL DEFAULT 'pending'
-    CHECK (state IN ('pending', 'claimed', 'ambiguous', 'verified', 'conflict')),
+    CHECK (state IN (
+      'pending', 'claimed', 'submitted', 'ambiguous', 'verified', 'conflict'
+    )),
   attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  source_created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   claimed_by TEXT,
   claim_expires_at TIMESTAMPTZ,
+  submitted_at TIMESTAMPTZ,
   verified_at TIMESTAMPTZ,
   last_error TEXT,
   PRIMARY KEY (train_job_id, projection_generation, output_ordinal),
@@ -550,6 +571,104 @@ CREATE TABLE IF NOT EXISTS wandb_projection_rows (
     REFERENCES wandb_projection_generations(train_job_id, projection_generation)
     ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS wandb_projection_source_cursors (
+  train_job_id BIGINT NOT NULL,
+  projection_generation BIGINT NOT NULL,
+  telemetry_generation BIGINT NOT NULL CHECK (telemetry_generation >= 1),
+  producer_ordinal INTEGER NOT NULL CHECK (producer_ordinal >= 0),
+  consumed_through_sequence BIGINT NOT NULL DEFAULT 0
+    CHECK (consumed_through_sequence >= 0),
+  source_events_consumed BIGINT NOT NULL DEFAULT 0 CHECK (source_events_consumed >= 0),
+  raw_frames_consumed BIGINT NOT NULL DEFAULT 0 CHECK (raw_frames_consumed >= 0),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (
+    train_job_id, projection_generation, telemetry_generation, producer_ordinal
+  ),
+  FOREIGN KEY (train_job_id, projection_generation)
+    REFERENCES wandb_projection_generations(train_job_id, projection_generation)
+    ON DELETE CASCADE,
+  FOREIGN KEY (train_job_id, telemetry_generation, producer_ordinal)
+    REFERENCES telemetry_producers(
+      train_job_id, telemetry_generation, producer_ordinal
+    )
+);
+
+CREATE TABLE IF NOT EXISTS wandb_publication_components (
+  train_job_id BIGINT NOT NULL REFERENCES train_jobs(id) ON DELETE CASCADE,
+  component TEXT NOT NULL CHECK (component IN ('history', 'artifacts', 'terminal')),
+  state TEXT NOT NULL DEFAULT 'pending'
+    CHECK (state IN ('pending', 'live', 'retrying', 'complete', 'failed', 'disabled')),
+  attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  error TEXT,
+  next_retry_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  completed_at TIMESTAMPTZ,
+  PRIMARY KEY (train_job_id, component)
+);
+
+ALTER TABLE wandb_projection_generations
+  ADD COLUMN IF NOT EXISTS protocol_version TEXT NOT NULL
+    DEFAULT 'wandb-generational-projection-v1';
+ALTER TABLE wandb_projection_generations
+  ALTER COLUMN protocol_version SET DEFAULT 'wandb-generational-projection-v2';
+ALTER TABLE wandb_projection_generations
+  ADD COLUMN IF NOT EXISTS submitted_through_ordinal BIGINT NOT NULL DEFAULT -1;
+ALTER TABLE wandb_projection_generations
+  ADD COLUMN IF NOT EXISTS source_events_consumed BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE wandb_projection_generations
+  ADD COLUMN IF NOT EXISTS raw_frames_consumed BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE wandb_projection_generations
+  ADD COLUMN IF NOT EXISTS selected_rows BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE wandb_projection_generations ADD COLUMN IF NOT EXISTS projection_chain_sha256 TEXT;
+ALTER TABLE wandb_projection_generations ADD COLUMN IF NOT EXISTS close_ordinal BIGINT;
+ALTER TABLE wandb_projection_generations ADD COLUMN IF NOT EXISTS last_source_at TIMESTAMPTZ;
+ALTER TABLE wandb_projection_generations ADD COLUMN IF NOT EXISTS last_submitted_at TIMESTAMPTZ;
+ALTER TABLE wandb_projection_generations ADD COLUMN IF NOT EXISTS last_verification_at TIMESTAMPTZ;
+ALTER TABLE wandb_projection_generations ADD COLUMN IF NOT EXISTS last_verified_at TIMESTAMPTZ;
+ALTER TABLE wandb_projection_generations
+  ADD COLUMN IF NOT EXISTS latest_verified_source_at TIMESTAMPTZ;
+ALTER TABLE wandb_projection_generations ADD COLUMN IF NOT EXISTS terminal_started_at TIMESTAMPTZ;
+ALTER TABLE wandb_projection_generations ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
+ALTER TABLE wandb_projection_generations
+  DROP CONSTRAINT IF EXISTS wandb_projection_generations_state_check;
+ALTER TABLE wandb_projection_generations
+  ADD CONSTRAINT wandb_projection_generations_state_check CHECK (state IN (
+    'pending', 'publishing', 'verifying', 'active', 'draining', 'complete',
+    'sealed', 'quarantined', 'failed', 'disabled'
+  ));
+ALTER TABLE wandb_projection_rows
+  ADD COLUMN IF NOT EXISTS source_created_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE wandb_projection_rows ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMPTZ;
+ALTER TABLE wandb_projection_rows ADD COLUMN IF NOT EXISTS ambiguous_at TIMESTAMPTZ;
+ALTER TABLE wandb_projection_rows DROP CONSTRAINT IF EXISTS wandb_projection_rows_state_check;
+ALTER TABLE wandb_projection_rows
+  ADD CONSTRAINT wandb_projection_rows_state_check CHECK (state IN (
+    'pending', 'claimed', 'submitted', 'ambiguous', 'verified', 'conflict'
+  ));
+
+UPDATE wandb_projection_generations
+SET state='disabled', sealed_at=COALESCE(sealed_at, now())
+WHERE protocol_version <> 'wandb-generational-projection-v2'
+  AND state NOT IN ('quarantined', 'failed', 'disabled');
+
+UPDATE train_jobs j
+SET active_wandb_projection_generation=NULL
+WHERE active_wandb_projection_generation IS NOT NULL
+  AND EXISTS (
+    SELECT 1 FROM wandb_projection_generations g
+    WHERE g.train_job_id=j.id
+      AND g.projection_generation=j.active_wandb_projection_generation
+      AND g.state='disabled'
+  );
+
+INSERT INTO wandb_publication_components (train_job_id, component, state)
+SELECT j.id, component, 'pending'
+FROM train_jobs j
+CROSS JOIN unnest(ARRAY['history','artifacts','terminal']) AS component
+WHERE j.telemetry_protocol_version=2
+  AND COALESCE((j.train_config->>'wandb')::boolean, FALSE)
+ON CONFLICT DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS telemetry_evidence_scopes (
   train_job_id BIGINT NOT NULL REFERENCES train_jobs(id) ON DELETE CASCADE,
@@ -588,6 +707,15 @@ CREATE INDEX IF NOT EXISTS wandb_projection_rows_due_idx
   ON wandb_projection_rows (
     state, claim_expires_at, train_job_id, projection_generation, output_ordinal
   );
+CREATE INDEX IF NOT EXISTS wandb_projection_rows_verification_idx
+  ON wandb_projection_rows (
+    train_job_id, projection_generation, output_ordinal
+  ) WHERE state IN ('claimed', 'submitted', 'ambiguous');
+CREATE INDEX IF NOT EXISTS wandb_projection_source_cursors_due_idx
+  ON wandb_projection_source_cursors (
+    train_job_id, projection_generation, telemetry_generation, producer_ordinal,
+    consumed_through_sequence
+  );
 CREATE INDEX IF NOT EXISTS telemetry_run_facts_comparison_idx
   ON telemetry_run_facts (
     comparability_sha256, cohort_manifest_sha256, rank_metric, seed
@@ -606,15 +734,15 @@ CREATE OR REPLACE FUNCTION rlab_guard_metric_batch_delete()
 RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
   rollout telemetry_rollout_controls%ROWTYPE;
-  authorization TEXT;
+  delete_authorization TEXT;
 BEGIN
   SELECT * INTO rollout FROM telemetry_rollout_controls WHERE singleton = TRUE;
-  authorization := current_setting('rlab.telemetry_delete_generation', TRUE);
+  delete_authorization := current_setting('rlab.telemetry_delete_generation', TRUE);
   IF OLD.archived_at IS NULL OR OLD.archive_root_sha256 IS NULL THEN
     RAISE EXCEPTION 'metric batch deletion requires a verified canonical archive root';
   END IF;
   IF rollout.destructive_hold
-     AND authorization IS DISTINCT FROM rollout.cutover_generation::text THEN
+     AND delete_authorization IS DISTINCT FROM rollout.cutover_generation::text THEN
     RAISE EXCEPTION 'telemetry destructive hold denies metric batch deletion';
   END IF;
   RETURN OLD;

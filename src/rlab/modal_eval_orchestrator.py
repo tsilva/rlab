@@ -2355,6 +2355,14 @@ def terminalize_artifact_only_runs(conn) -> int:
 def _terminalize_v2_runs(cur) -> int:
     cur.execute(
         """
+        SELECT to_regclass('telemetry_evidence_scopes') AS telemetry_evidence_scopes
+        """
+    )
+    schema = cur.fetchone()
+    if not schema or schema["telemetry_evidence_scopes"] is None:
+        return 0
+    cur.execute(
+        """
         WITH ready AS (
           SELECT
             r.train_job_id,
@@ -2392,42 +2400,78 @@ def _terminalize_v2_runs(cur) -> int:
             AND t.telemetry_protocol_version=2
             AND t.process_exited_at IS NOT NULL
             AND r.complete_announcement_seen=TRUE
-            AND r.outcome IN ('accepted','not_accepted','unknown','canceled')
+            AND (
+              (
+                r.contract_json->>'checkpoint_eval_backend' = 'none'
+                AND r.outcome IS NULL
+              )
+              OR r.outcome IN ('accepted','not_accepted','unknown','canceled')
+            )
+            AND t.live_publication_status IN ('complete','disabled')
+            AND NOT EXISTS (
+              SELECT 1 FROM artifact_announcement_ledger ledger
+              WHERE ledger.train_job_id=r.train_job_id
+                AND ledger.disposition='ready'
+                AND NOT EXISTS (
+                  SELECT 1 FROM artifact_publication_receipts receipt
+                  WHERE receipt.train_job_id=ledger.train_job_id
+                    AND receipt.ledger_id=ledger.ledger_id
+                    AND receipt.role='availability'
+                    AND receipt.promotion_revision=0
+                )
+            )
+            AND EXISTS (
+              SELECT 1
+              FROM telemetry_integrity integrity
+              WHERE integrity.train_job_id=r.train_job_id
+                AND integrity.telemetry_generation=t.telemetry_generation
+                AND integrity.exact=TRUE
+                AND integrity.classification='intact_with_proof'
+            )
             AND NOT EXISTS (
               SELECT 1 FROM eval_jobs j
               WHERE j.train_job_id=r.train_job_id
                 AND j.status IN ('pending','dispatching','submitted','blocked_budget')
             )
-            AND NOT EXISTS (
-              SELECT 1 FROM artifact_announcement_ledger ledger
-              WHERE ledger.train_job_id=r.train_job_id
-                AND ledger.disposition='ready'
-                AND (
-                  NOT EXISTS (
-                    SELECT 1 FROM artifact_durability_receipts receipt
-                    WHERE receipt.train_job_id=ledger.train_job_id
-                      AND receipt.ledger_id=ledger.ledger_id
-                      AND receipt.object_kind='model'
-                  )
-                  OR NOT EXISTS (
-                    SELECT 1 FROM artifact_durability_receipts receipt
-                    WHERE receipt.train_job_id=ledger.train_job_id
-                      AND receipt.ledger_id=ledger.ledger_id
-                      AND receipt.object_kind='metadata'
-                  )
-                  OR (
-                    ledger.recipe_uri IS NOT NULL
-                    AND NOT EXISTS (
+            AND (
+              NOT EXISTS (
+                SELECT 1
+                FROM job_launches launch
+                WHERE launch.job_id=r.train_job_id
+                  AND launch.job_kind='train'
+                  AND launch.workspace_layout_version IS NOT NULL
+              )
+              OR NOT EXISTS (
+                SELECT 1 FROM artifact_announcement_ledger ledger
+                WHERE ledger.train_job_id=r.train_job_id
+                  AND ledger.disposition='ready'
+                  AND (
+                    NOT EXISTS (
                       SELECT 1 FROM artifact_durability_receipts receipt
                       WHERE receipt.train_job_id=ledger.train_job_id
                         AND receipt.ledger_id=ledger.ledger_id
-                        AND receipt.object_kind='recipe'
+                        AND receipt.object_kind='model'
+                    )
+                    OR NOT EXISTS (
+                      SELECT 1 FROM artifact_durability_receipts receipt
+                      WHERE receipt.train_job_id=ledger.train_job_id
+                        AND receipt.ledger_id=ledger.ledger_id
+                        AND receipt.object_kind='metadata'
+                    )
+                    OR (
+                      ledger.recipe_uri IS NOT NULL
+                      AND NOT EXISTS (
+                        SELECT 1 FROM artifact_durability_receipts receipt
+                        WHERE receipt.train_job_id=ledger.train_job_id
+                          AND receipt.ledger_id=ledger.ledger_id
+                          AND receipt.object_kind='recipe'
+                      )
                     )
                   )
-                )
+              )
             )
             AND (
-              r.outcome <> 'accepted'
+              r.outcome IS DISTINCT FROM 'accepted'
               OR EXISTS (
                 SELECT 1
                 FROM eval_jobs promoted

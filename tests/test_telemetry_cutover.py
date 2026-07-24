@@ -9,6 +9,7 @@ from rlab.telemetry_cutover import (
     require_runtime_admission,
     write_cutover_marker,
 )
+from rlab.telemetry_schema import TELEMETRY_V2_SCHEMA_SQL
 
 
 class TelemetryCutoverTests(unittest.TestCase):
@@ -49,6 +50,22 @@ class TelemetryCutoverTests(unittest.TestCase):
                 environment={},
                 marker_path=Path(directory) / "absent.json",
             )
+
+    def test_delete_guard_avoids_reserved_plpgsql_authorization_identifier(self):
+        self.assertIn("delete_authorization TEXT", TELEMETRY_V2_SCHEMA_SQL)
+        self.assertNotIn("\n  authorization TEXT;", TELEMETRY_V2_SCHEMA_SQL)
+
+    def test_bounded_projection_schema_has_cursors_components_and_watermarks(self):
+        for fragment in (
+            "CREATE TABLE IF NOT EXISTS wandb_projection_source_cursors",
+            "CREATE TABLE IF NOT EXISTS wandb_publication_components",
+            "submitted_through_ordinal",
+            "projection_chain_sha256",
+            "close_ordinal",
+            "ambiguous_at",
+            "'history', 'artifacts', 'terminal'",
+        ):
+            self.assertIn(fragment, TELEMETRY_V2_SCHEMA_SQL)
 
 
 if __name__ == "__main__":

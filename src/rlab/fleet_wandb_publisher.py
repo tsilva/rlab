@@ -185,6 +185,10 @@ def _hydrate_artifact_projection_payload(payload: dict[str, Any]) -> dict[str, A
     schema = str(payload.get("artifact_publication_schema") or "")
     if schema not in {"v2", "v3"}:
         return payload
+    if isinstance(payload.get("model_metadata"), dict) and (
+        schema == "v2" or isinstance(payload.get("artifact_members"), dict)
+    ):
+        return payload
     store = ObjectStore(object_store_base_uri())
     document = _verified_json_object(
         store,
@@ -376,13 +380,16 @@ def _artifact_collection(artifact: Any) -> str:
 def _artifact_receipts_from_remote(
     remote: Any,
     payloads: list[dict[str, Any]],
+    *,
+    artifacts: list[Any] | None = None,
 ) -> list[dict[str, Any]]:
     if not payloads:
         return []
-    logged = getattr(remote, "logged_artifacts", None)
-    if not callable(logged):
-        raise WandbArtifactVisibilityError("W&B run does not expose logged artifacts")
-    artifacts = list(logged())
+    if artifacts is None:
+        logged = getattr(remote, "logged_artifacts", None)
+        if not callable(logged):
+            raise WandbArtifactVisibilityError("W&B run does not expose logged artifacts")
+        artifacts = list(logged())
     receipts: list[dict[str, Any]] = []
     for payload in payloads:
         train_config = dict(payload["train_config"])
@@ -676,7 +683,13 @@ def finalize_finishing_run(
             run = dict(run)
             cur.execute(
                 """
-                SELECT s.stream_id, s.final_sequence, s.published_sequence
+                SELECT s.stream_id, s.final_sequence, s.submitted_sequence,
+                  NOT EXISTS (
+                    SELECT 1
+                    FROM metric_batches b
+                    WHERE b.stream_id = s.stream_id
+                      AND b.wandb_confirmed_at IS NULL
+                  ) AS all_batches_wandb_confirmed
                 FROM metric_streams s
                 JOIN worker_attempts a ON a.attempt_id = s.attempt_id
                 WHERE a.train_job_id = %(id)s
@@ -686,7 +699,8 @@ def finalize_finishing_run(
             streams = [dict(row) for row in cur.fetchall()]
         if any(
             row.get("final_sequence") is None
-            or int(row["published_sequence"]) < int(row["final_sequence"])
+            or int(row["submitted_sequence"]) < int(row["final_sequence"])
+            or not bool(row["all_batches_wandb_confirmed"])
             for row in streams
         ):
             return False
@@ -1288,6 +1302,7 @@ def publish_claimed_run(
     wandb_url: str | None = None
     adopted_artifacts: set[tuple[int, int, str, int]] = set()
     artifact_api_run = None
+    artifact_api_snapshot: list[Any] | None = None
     for batch in unpublished:
         for frame in decoded[int(batch["id"])]:
             if str(frame.get("kind") or "") != "projection":
@@ -1298,10 +1313,19 @@ def publish_claimed_run(
                 continue
             payload = _repair_artifact_projection_identity(raw_payload, train_config)
             payload = _hydrate_artifact_projection_payload(payload)
+            frame["payload"] = payload
             if artifact_api_run is None:
                 artifact_api_run = _wandb_api_run(train_config)
+                logged = getattr(artifact_api_run, "logged_artifacts", None)
+                if not callable(logged):
+                    raise WandbArtifactVisibilityError("W&B run does not expose logged artifacts")
+                artifact_api_snapshot = list(logged())
             try:
-                _artifact_receipts_from_remote(artifact_api_run, [payload])
+                _artifact_receipts_from_remote(
+                    artifact_api_run,
+                    [payload],
+                    artifacts=artifact_api_snapshot,
+                )
             except WandbArtifactVisibilityError:
                 if _artifact_visibility_is_propagating([batch]):
                     raise
@@ -1313,6 +1337,14 @@ def publish_claimed_run(
                 claimed_batches=len(batches),
                 completed_frames=decoded_frames,
             )
+    # Stage and hash-check bytes for rows that still need SDK submission.
+    for batch in unpublished:
+        for frame in decoded[int(batch["id"])]:
+            if str(frame.get("kind") or "") != "projection":
+                continue
+            payload = _repair_artifact_projection_identity(dict(frame["payload"]), train_config)
+            if str(payload.get("artifact_publication_schema") or "") in {"v2", "v3"}:
+                frame["payload"] = _hydrate_artifact_projection_payload(payload)
     if unpublished or reassert_cursor_floor:
         session_step_max = remote_state.step_max
         expected: dict[str, int] = {}
@@ -1705,6 +1737,55 @@ def _publisher_actor_done(conn, train_job_id: int) -> bool:
     }
 
 
+def _reconcile_artifact_component(conn, train_job_id: int) -> None:
+    from rlab.telemetry_wandb_projection import set_publication_component
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT j.telemetry_protocol_version, j.telemetry_no_more_producers,
+                   EXISTS (
+                     SELECT 1 FROM artifact_announcement_ledger a
+                     WHERE a.train_job_id=j.id
+                       AND a.disposition='ready'
+                       AND NOT EXISTS (
+                         SELECT 1 FROM artifact_publication_receipts r
+                         WHERE r.train_job_id=a.train_job_id
+                           AND r.ledger_id=a.ledger_id
+                           AND r.role='availability'
+                           AND r.promotion_revision=0
+                       )
+                   ) AS missing_receipts,
+                   EXISTS (
+                     SELECT 1 FROM metric_batches b
+                     JOIN metric_streams s ON s.stream_id=b.stream_id
+                     JOIN worker_attempts w ON w.attempt_id=s.attempt_id
+                     WHERE w.train_job_id=j.id
+                       AND s.stream_id LIKE 'artifact-v3-%%'
+                       AND b.wandb_confirmed_at IS NULL
+                   ) AS pending_batches
+            FROM train_jobs j WHERE j.id=%(run)s
+            """,
+            {"run": int(train_job_id)},
+        )
+        row = cur.fetchone()
+    if not row:
+        return
+    if int(row["telemetry_protocol_version"] or 1) != 2:
+        return
+    complete = (
+        bool(row["telemetry_no_more_producers"])
+        and not bool(row["missing_receipts"])
+        and not bool(row["pending_batches"])
+    )
+    set_publication_component(
+        conn,
+        train_job_id=int(train_job_id),
+        component="artifacts",
+        state="complete" if complete else "live",
+    )
+
+
 def run_publisher_actor(
     conn,
     train_job_id: int,
@@ -1745,9 +1826,7 @@ def run_publisher_actor(
             if callable(stop_requested) and stop_requested():
                 return published
             session_started_at = time.time()
-            lease_owner = (
-                f"fleet-publisher-{os.getpid()}-{uuid.uuid4().hex[:8]}"
-            )
+            lease_owner = f"fleet-publisher-{os.getpid()}-{uuid.uuid4().hex[:8]}"
 
             def report_progress(
                 *,
@@ -1780,6 +1859,16 @@ def run_publisher_actor(
                 stage="claiming",
                 expected_source_fingerprint=expected_source_fingerprint,
             )
+            from rlab.telemetry_v2_controller import publish_run_once
+
+            try:
+                published += publish_run_once(
+                    conn,
+                    train_job_id=int(train_job_id),
+                    owner=lease_owner,
+                )
+            except Exception:
+                raise
             try:
                 published += drain_once(
                     conn,
@@ -1788,6 +1877,29 @@ def run_publisher_actor(
                     train_job_id=int(train_job_id),
                     progress=report_progress,
                 )
+                _reconcile_artifact_component(conn, int(train_job_id))
+            except Exception as exc:
+                from rlab.telemetry_wandb_projection import set_publication_component
+
+                conn.rollback()
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT live_publication_status FROM train_jobs WHERE id=%(run)s",
+                        {"run": int(train_job_id)},
+                    )
+                    publication = cur.fetchone()
+                set_publication_component(
+                    conn,
+                    train_job_id=int(train_job_id),
+                    component="artifacts",
+                    state=(
+                        "failed"
+                        if publication and str(publication["live_publication_status"]) == "failed"
+                        else "retrying"
+                    ),
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                raise
             finally:
                 _write_actor_state(
                     int(train_job_id),
@@ -1836,10 +1948,7 @@ def _validate_publisher_schema(conn) -> None:
                 "columns": [column for _table, column in sorted(required_columns)],
             },
         )
-        present = {
-            (str(row["table_name"]), str(row["column_name"]))
-            for row in cur.fetchall()
-        }
+        present = {(str(row["table_name"]), str(row["column_name"])) for row in cur.fetchall()}
     conn.rollback()
     missing = sorted(required_columns - present)
     if missing:
@@ -2000,11 +2109,9 @@ def main(argv: list[str] | None = None) -> int:
         try:
             _validate_publisher_schema(conn)
         except Exception as exc:
-            error = str(
-                redact(
-                    f"publisher actor startup failed: {type(exc).__name__}: {exc}"
-                )
-            )[:4000]
+            error = str(redact(f"publisher actor startup failed: {type(exc).__name__}: {exc}"))[
+                :4000
+            ]
             if args.train_job_id is not None:
                 _write_actor_state(
                     int(args.train_job_id),

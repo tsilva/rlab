@@ -733,6 +733,11 @@ class JobQueueTests(unittest.TestCase):
             "p_payload->>'_mailbox_event_id' IS DISTINCT FROM p_event_id",
             job_queue.SCHEMA_SQL,
         )
+        self.assertIn(
+            "ledger.ledger_id = event_ledger_id",
+            job_queue.SCHEMA_SQL,
+        )
+        self.assertNotIn("ledger_id = ledger_id", job_queue.SCHEMA_SQL)
         self.assertIn("attempt_row.provider = 'checkpoint-recovery'", job_queue.SCHEMA_SQL)
         self.assertIn("provider <> 'checkpoint-recovery'", job_queue.SCHEMA_SQL)
         self.assertNotIn("max_attempts", job_queue.SCHEMA_SQL)
@@ -768,6 +773,24 @@ class JobQueueTests(unittest.TestCase):
         self.assertIn("status IN ('launching', 'starting', 'running')", statement)
         self.assertNotIn("'finalizing'", statement)
         self.assertIn("provider <> 'checkpoint-recovery'", statement)
+        self.assertIn("host_operation_leases", statement)
+
+    def test_control_plane_upgrade_blockers_ignore_publication_only_finalization(self) -> None:
+        conn = FakeConnection(
+            results=[
+                {"row": {"train_jobs": "train_jobs"}},
+                {"row": {"count": 0}},
+            ]
+        )
+
+        self.assertEqual(job_queue.count_control_plane_upgrade_blockers(conn), 0)
+
+        statement = conn.cursor_obj.executed_sqls[1]
+        self.assertIn("status IN ('pending', 'launching', 'starting', 'running')", statement)
+        self.assertNotIn("'finalizing'", statement)
+        self.assertIn("FROM eval_jobs", statement)
+        self.assertIn("FROM eval_attempts", statement)
+        self.assertIn("FROM worker_attempts", statement)
         self.assertIn("host_operation_leases", statement)
 
     def test_runtime_validator_receives_execution_complete_config_before_insert(self) -> None:
@@ -1814,6 +1837,7 @@ class JobQueueTests(unittest.TestCase):
             "status": "succeeded",
             "launch_state": "succeeded",
             "live_publication_status": "complete",
+            "missing_artifact_receipts": 0,
         }
         restamping = {
             **source,
@@ -1833,7 +1857,41 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual(result["status"], "succeeded")
         self.assertEqual(result["live_publication_status"], "finishing")
         statements = conn.cursor_obj.executed_sqls
-        self.assertTrue(any("live_publication_status = 'finishing'" in sql for sql in statements))
+        self.assertTrue(
+            any("live_publication_status = %(publication_status)s" in sql for sql in statements)
+        )
+        self.assertTrue(
+            any(
+                params.get("publication_status") == "finishing"
+                for params in conn.cursor_obj.executed_params_list
+            )
+        )
+        self.assertFalse(any("UPDATE eval_jobs" in sql for sql in statements))
+        self.assertFalse(any("UPDATE job_launches" in sql for sql in statements))
+
+    def test_retry_succeeded_run_reopens_missing_artifact_publication(self) -> None:
+        source = {
+            "id": 194,
+            "status": "succeeded",
+            "launch_state": "failed",
+            "live_publication_status": "complete",
+            "missing_artifact_receipts": 101,
+        }
+        reopened = {
+            **source,
+            "live_publication_status": "pending",
+            "live_publication_attempts": 0,
+        }
+        conn = FakeConnection(results=[{"row": source}, {"row": reopened}, {}])
+
+        result = job_queue.retry_train_job_finalization(conn, job_id=194)
+
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(result["live_publication_status"], "pending")
+        statements = conn.cursor_obj.executed_sqls
+        self.assertTrue(
+            any("live_publication_status = %(publication_status)s" in sql for sql in statements)
+        )
         self.assertFalse(any("UPDATE eval_jobs" in sql for sql in statements))
         self.assertFalse(any("UPDATE job_launches" in sql for sql in statements))
 
@@ -1881,6 +1939,82 @@ class JobQueueTests(unittest.TestCase):
         self.assertFalse(any("UPDATE eval_jobs" in statement for statement in statements))
         self.assertFalse(any("cancel_requested = FALSE" in statement for statement in statements))
         self.assertTrue(any("publication_status" in statement for statement in statements))
+
+    def test_retry_legacy_publication_stuck_run_reopens_only_publication(self) -> None:
+        source = {
+            "id": 184,
+            "status": "finalizing",
+            "launch_state": "canceled",
+            "cancel_requested": True,
+            "process_exited_at": "2026-07-23T14:22:37Z",
+            "live_publication_status": "failed",
+            "eval_status": "finalizing",
+            "eval_outcome": "canceled",
+            "complete_announcement_seen": True,
+            "active_eval_jobs": 0,
+            "active_eval_attempts": 0,
+            "active_eval_workers": 0,
+            "active_train_workers": 0,
+        }
+        reopened = {
+            **source,
+            "status": "finalizing",
+            "live_publication_status": "pending",
+        }
+        conn = FakeConnection(
+            results=[
+                {"row": source},
+                {
+                    "row": {
+                        "residual_streams": 827,
+                        "residual_batches": 827,
+                        "incomplete_streams": 827,
+                    }
+                },
+                {"row": reopened},
+                {},
+            ]
+        )
+
+        result = job_queue.retry_train_job_finalization(
+            conn,
+            job_id=184,
+            preflight_controller_scope="wandb",
+        )
+
+        self.assertEqual(result["live_publication_status"], "pending")
+        statements = conn.cursor_obj.executed_sqls
+        self.assertFalse(any("UPDATE eval_runs" in statement for statement in statements))
+        self.assertFalse(any("UPDATE eval_jobs" in statement for statement in statements))
+        publication_update = next(
+            statement
+            for statement in statements
+            if "live_publication_status = %(publication_status)s" in statement
+        )
+        self.assertIn("status = %(source_status)s", publication_update)
+
+    def test_wandb_only_preflight_rejects_full_retry_after_state_change(self) -> None:
+        source = {
+            "id": 7,
+            "status": "finalization_failed",
+            "launch_state": "succeeded",
+            "live_publication_status": "failed",
+        }
+        conn = FakeConnection(results=[{"row": source}])
+
+        with self.assertRaisesRegex(RuntimeError, "changed after its W&B-only"):
+            job_queue.retry_train_job_finalization(
+                conn,
+                job_id=7,
+                preflight_controller_scope="wandb",
+            )
+
+        statements = [
+            statement
+            for statement in conn.cursor_obj.executed_sqls
+            if "pg_advisory_xact_lock_shared" not in statement
+        ]
+        self.assertEqual(len(statements), 1)
 
     def test_retry_completed_canceled_run_reopens_only_missing_artifact_receipts(self) -> None:
         source = {

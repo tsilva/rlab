@@ -69,7 +69,8 @@ see that the variants are isolated.
 For each row, resolve exactly:
 
 - one goal under `experiments/goals/`
-- one recipe under `experiments/recipes/`
+- one launchable recipe directly under the selected goal's `recipes/` directory;
+  reusable defaults may come only from `experiments/recipes/_presets/`
 - machine, defaulting to `beast-3`
 - optional seed and `--set` overrides
 

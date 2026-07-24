@@ -451,7 +451,7 @@ class FleetServiceTests(unittest.TestCase):
             paths = self.make_paths(Path(temporary))
             runner = mock.MagicMock()
 
-            with self.assertRaisesRegex(RuntimeError, "2 nonterminal job"):
+            with self.assertRaisesRegex(RuntimeError, "2 active execution blocker"):
                 fleet_service.reload_controller_service(
                     paths,
                     "evaluation",
@@ -496,13 +496,16 @@ class FleetServiceTests(unittest.TestCase):
     def test_publisher_validation_accepts_manager_owned_and_verified_orphan_groups(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
+            fingerprint = "a" * 64
 
             def runner(argv, **_kwargs):
                 if argv[:2] == ["ps", "-axo"]:
                     return completed(
                         argv,
                         stdout=(
-                            "43 42 42 python -m rlab.fleet_wandb_publisher --train-job-id 67\n"
+                            "43 42 42 python -m rlab.fleet_wandb_publisher "
+                            "--limit 20 --train-job-id 67 "
+                            f"--expected-source-fingerprint {fingerprint}\n"
                         ),
                     )
                 return completed(argv, stdout=f"p43\nn{root}\n")
@@ -530,6 +533,25 @@ class FleetServiceTests(unittest.TestCase):
 
         self.assertEqual([item.pid for item in direct], [43])
         self.assertEqual([item.pgid for item in orphan], [42])
+
+    def test_publisher_validation_rejects_invalid_source_fingerprint(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+
+            def runner(argv, **_kwargs):
+                if argv[:2] == ["ps", "-axo"]:
+                    return completed(
+                        argv,
+                        stdout=(
+                            "43 42 42 python -m rlab.fleet_wandb_publisher "
+                            "--train-job-id 67 "
+                            "--expected-source-fingerprint not-a-sha256\n"
+                        ),
+                    )
+                return completed(argv, stdout=f"p43\nn{root}\n")
+
+            with self.assertRaisesRegex(RuntimeError, "invalid source fingerprint"):
+                fleet_service._publisher_processes(root, parent_pid=42, runner=runner)
 
     def test_publisher_validation_ignores_actor_that_exits_after_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -604,6 +626,32 @@ class FleetServiceTests(unittest.TestCase):
         with mock.patch.object(fleet_service, "controller_services_status", return_value=status):
             with self.assertRaisesRegex(RuntimeError, "rlab fleet service install --replace"):
                 fleet_service.require_compatible_controller_services()
+
+    def test_preflight_can_require_only_the_wandb_controller(self) -> None:
+        status = {
+            "controllers": {
+                name: {
+                    "installed": True,
+                    "loaded": True,
+                    "running": True,
+                    "protocol_compatible": name == "wandb",
+                }
+                for name in fleet_service.CONTROLLER_NAMES
+            },
+        }
+        with mock.patch.object(fleet_service, "controller_services_status", return_value=status):
+            self.assertIs(
+                fleet_service.require_compatible_controller_services(
+                    controller_names=("wandb",)
+                ),
+                status,
+            )
+            with self.assertRaisesRegex(RuntimeError, "machine, evaluation, workspace"):
+                fleet_service.require_compatible_controller_services()
+
+    def test_preflight_rejects_an_empty_controller_scope(self) -> None:
+        with self.assertRaisesRegex(ValueError, "at least one fleet controller"):
+            fleet_service.require_compatible_controller_services(controller_names=())
 
     def test_recovery_preflight_allows_source_stale_but_runtime_current_controllers(self) -> None:
         controllers = {}
@@ -869,6 +917,31 @@ class FleetServiceTests(unittest.TestCase):
         self.assertEqual(saved["phase"], "degraded")
         self.assertIn("bad:RuntimeError:provider failed", saved["last_error"])
 
+    def test_idle_machine_maintenance_failure_is_rate_limited_at_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            connection = mock.MagicMock()
+            registry = mock.MagicMock()
+            registry.machines = {"beast-2": mock.MagicMock()}
+            with (
+                mock.patch.object(fleet_controllers, "connect", return_value=connection),
+                mock.patch.object(fleet_controllers, "database_url", return_value="postgresql://"),
+                mock.patch(
+                    "rlab.job_queue.machines_with_service_work",
+                    return_value=(),
+                ),
+                mock.patch(
+                    "rlab.machines.load_machine_registry",
+                    return_value=registry,
+                ),
+            ):
+                first = fleet_controllers._controller_machines(root)
+                second = fleet_controllers._controller_machines(root)
+
+        self.assertEqual(first, ("beast-2",))
+        self.assertEqual(second, ())
+        self.assertEqual(connection.close.call_count, 2)
+
     def test_machine_controller_escalates_database_failure_to_controller_level(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -983,6 +1056,27 @@ class FleetServiceTests(unittest.TestCase):
         self.assertEqual(observed_retry["phase"], "reconciling")
         self.assertIn("modal unavailable", str(observed_retry["last_error"]))
 
+    def test_wandb_controller_reconciles_telemetry_v2(self) -> None:
+        connection = mock.MagicMock()
+        with (
+            mock.patch("rlab.telemetry_v2_controller.archive_once") as archive,
+            mock.patch("rlab.telemetry_v2_controller.finalize_roots_once") as finalize,
+            mock.patch("rlab.telemetry_v2_controller.project_once") as project,
+        ):
+            result = fleet_controllers._reconcile_v2_telemetry(connection)
+
+        archive.assert_called_once_with(connection, limit=100)
+        finalize.assert_called_once_with(connection, limit=100)
+        project.assert_called_once_with(connection, limit=500)
+        self.assertEqual(
+            result,
+            {
+                "archived_segments": archive.return_value,
+                "finalized_roots": finalize.return_value,
+                "projected_rows": project.return_value,
+            },
+        )
+
     def test_schema_guard_refuses_nonterminal_work_before_shutdown(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             paths = self.make_paths(Path(temporary))
@@ -998,6 +1092,27 @@ class FleetServiceTests(unittest.TestCase):
         self.assertFalse(
             any(call.args[0][:2] == ["launchctl", "bootout"] for call in runner.call_args_list)
         )
+
+    def test_additive_schema_guard_allows_publication_only_finalization(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = self.make_paths(Path(temporary))
+            runner = mock.MagicMock(return_value=completed([]))
+            with (
+                mock.patch.object(fleet_service, "service_is_loaded", return_value=False),
+                mock.patch.object(
+                    fleet_service,
+                    "_default_count_control_plane_upgrade_blockers",
+                    return_value=0,
+                ) as blockers,
+            ):
+                with fleet_service.schema_change_service_guard(
+                    paths,
+                    runner=runner,
+                    allow_finalizing_jobs=True,
+                ):
+                    pass
+
+        blockers.assert_called_once_with(paths.repo_root)
 
     def test_schema_guard_restores_exactly_the_loaded_controller_set(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

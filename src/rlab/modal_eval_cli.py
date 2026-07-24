@@ -336,6 +336,7 @@ def cmd_retry(args: argparse.Namespace) -> int:
 
 def cmd_recover(args: argparse.Namespace) -> int:
     from rlab.docker_host import DockerRunnerHost, run_checkpoint_coordinator_container
+    from rlab.fleet import default_repo_root, load_mailbox_runner_env
     from rlab.machines import load_machine_registry, resolve_machine
     from rlab.telemetry_mailbox import (
         ATTEMPT_ID_ENV,
@@ -344,12 +345,34 @@ def cmd_recover(args: argparse.Namespace) -> int:
     )
 
     conn = _conn()
+
+    def reconnect_after_remote_wait() -> None:
+        nonlocal conn
+        try:
+            conn.close()
+        finally:
+            conn = _conn()
+
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT t.*, l.launch_id, l.lifecycle_generation, l.output_uri,
-                  r.status AS eval_run_status
+                  r.status AS eval_run_status,
+                  (
+                    SELECT count(*)
+                    FROM artifact_announcement_ledger ledger
+                    WHERE ledger.train_job_id=t.id
+                      AND ledger.disposition='ready'
+                      AND NOT EXISTS (
+                        SELECT 1
+                        FROM artifact_publication_receipts receipt
+                        WHERE receipt.train_job_id=ledger.train_job_id
+                          AND receipt.ledger_id=ledger.ledger_id
+                          AND receipt.role='availability'
+                          AND receipt.promotion_revision=0
+                      )
+                  ) AS missing_artifact_receipts
                 FROM train_jobs t
                 JOIN job_launches l ON l.job_id = t.id
                 LEFT JOIN eval_runs r ON r.train_job_id = t.id
@@ -373,10 +396,15 @@ def cmd_recover(args: argparse.Namespace) -> int:
                 f"train job {args.train_job_id} is {train_status or 'unknown'}, not terminal"
             )
         eval_run_status = str(row.get("eval_run_status") or "")
-        if eval_run_status != "awaiting_artifact_recovery":
+        publication_recovery = (
+            train_status == "succeeded"
+            and eval_run_status in {"finalizing", "complete"}
+            and int(row.get("missing_artifact_receipts") or 0) > 0
+        )
+        if eval_run_status != "awaiting_artifact_recovery" and not publication_recovery:
             raise ValueError(
                 f"eval run for train job {args.train_job_id} is "
-                f"{eval_run_status or 'missing'}, not awaiting_artifact_recovery"
+                f"{eval_run_status or 'missing'}, not awaiting artifact or publication recovery"
             )
         machine = resolve_machine(load_machine_registry(), str(row["machine"]))
         host = DockerRunnerHost(machine)
@@ -432,12 +460,16 @@ def cmd_recover(args: argparse.Namespace) -> int:
             lifetime=timedelta(minutes=20),
         )
         try:
-            recovery_env_path = host.write_attempt_env(
-                recovery_attempt_id,
+            recovery_env = load_mailbox_runner_env(default_repo_root() / ".env")
+            recovery_env.update(
                 {
                     ATTEMPT_ID_ENV: recovery_attempt_id,
                     ATTEMPT_TOKEN_ENV: token,
-                },
+                }
+            )
+            recovery_env_path = host.write_attempt_env(
+                recovery_attempt_id,
+                recovery_env,
             )
         except Exception as exc:
             with conn:
@@ -482,12 +514,14 @@ def cmd_recover(args: argparse.Namespace) -> int:
             )
         except Exception as exc:
             recovery_error = str(exc)
+            reconnect_after_remote_wait()
             if operation_id:
                 finish_host_operation_lease(
                     conn, operation_id=operation_id, error=str(exc), evidence={}
                 )
             raise
         else:
+            reconnect_after_remote_wait()
             if operation_id:
                 finish_host_operation_lease(
                     conn,
@@ -524,20 +558,23 @@ def cmd_recover(args: argparse.Namespace) -> int:
                             "error": recovery_error,
                         },
                     )
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    UPDATE eval_runs
-                    SET status = 'active', error = NULL, updated_at = now()
-                    WHERE train_job_id = %(id)s
-                      AND status = 'awaiting_artifact_recovery'
-                    RETURNING train_job_id
-                    """,
-                    {"id": int(args.train_job_id)},
-                )
-                if not cur.fetchone():
-                    raise RuntimeError("eval run left awaiting_artifact_recovery during recovery")
+        if not publication_recovery:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE eval_runs
+                        SET status = 'active', error = NULL, updated_at = now()
+                        WHERE train_job_id = %(id)s
+                          AND status = 'awaiting_artifact_recovery'
+                        RETURNING train_job_id
+                        """,
+                        {"id": int(args.train_job_id)},
+                    )
+                    if not cur.fetchone():
+                        raise RuntimeError(
+                            "eval run left awaiting_artifact_recovery during recovery"
+                        )
         print(json.dumps({"train_job_id": int(args.train_job_id), "recovered": True}))
         _kick("modal_artifact_recovery", entity_kind="train", entity_id=int(args.train_job_id))
         return 0

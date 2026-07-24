@@ -75,9 +75,10 @@ def canonical_event_from_ledger_row(row: Mapping[str, Any]) -> CanonicalEvent:
     if sha256_bytes(raw) != str(row["payload_sha256"]):
         raise RuntimeError("canonical telemetry event payload digest mismatch")
     if encoding == "metric_batch_zlib_json_v1":
+        metrics_schema_version = int(row.get("metrics_schema_version") or 5)
         payload: Mapping[str, object] = {
             "encoding": encoding,
-            "frames": decode_metric_batch(raw),
+            "frames": decode_metric_batch(raw, schema_version=metrics_schema_version),
             "source_payload_sha256": str(row["payload_sha256"]),
             "ledger_event_sha256": str(row["event_sha256"]),
             "predecessor_sha256": row.get("predecessor_sha256"),
@@ -186,12 +187,17 @@ def claim_next_segment(
                 return None
             cur.execute(
                 """
-                SELECT e.*, p.producer_identity
+                SELECT e.*, p.producer_identity,
+                       COALESCE(
+                         (j.train_config->>'metrics_schema_version')::integer,
+                         5
+                       ) AS metrics_schema_version
                 FROM telemetry_events e
                 JOIN telemetry_producers p
                   ON p.train_job_id = e.train_job_id
                  AND p.telemetry_generation = e.telemetry_generation
                  AND p.producer_ordinal = e.producer_ordinal
+                JOIN train_jobs j ON j.id = e.train_job_id
                 WHERE e.train_job_id = %(train_job_id)s
                   AND e.telemetry_generation = %(generation)s
                   AND e.producer_ordinal = %(producer_ordinal)s
@@ -521,7 +527,9 @@ def finalize_exact_archive_root(conn, *, train_job_id: int) -> dict[str, Any]:
                 WHERE id = %(run)s
                   AND telemetry_protocol_version = 2
                   AND telemetry_frozen_at IS NULL
-                  AND status IN ('succeeded', 'failed', 'canceled', 'finalization_failed')
+                  AND status IN (
+                    'finalizing', 'succeeded', 'failed', 'canceled', 'finalization_failed'
+                  )
                 """,
                 {"run": int(train_job_id)},
             )

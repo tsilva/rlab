@@ -243,8 +243,7 @@ def current_incidents(
             field == "launch_error"
             and terminal_failure_reported
             and str(row.get("launch_state") or "") == "failed"
-            and str(row.get("launch_error") or "").strip()
-            == str(row.get("error") or "").strip()
+            and str(row.get("launch_error") or "").strip() == str(row.get("error") or "").strip()
         ):
             continue
         if field == "eval_error" and diagnostics.get("eval_outcome") is not None:
@@ -347,7 +346,39 @@ def run_projection(conn, run_id: int) -> dict[str, Any]:
     row = dict(rows[0])
     diagnostics, history = _diagnostics(conn, int(run_id))
     wandb_artifact = _wandb_artifact_ref(row)
+    projection_metrics: dict[str, Any] = {}
+    if int(row.get("telemetry_protocol_version") or 1) == 2:
+        try:
+            from rlab.telemetry_wandb_projection import projection_observability
+
+            projection_metrics = projection_observability(conn, train_job_id=int(run_id))
+        except Exception:
+            projection_metrics = {}
     incidents = current_incidents(row, diagnostics)
+    freshness = projection_metrics.get("wandb_freshness_seconds")
+    if freshness is not None and float(freshness) >= 45.0:
+        incidents.append(
+            _incident(
+                int(run_id),
+                (
+                    "wandb_freshness_slo_violation"
+                    if float(freshness) >= 60.0
+                    else "wandb_freshness_warning"
+                ),
+                "wandb",
+                f"latest_verified_age_seconds={float(freshness):.1f}",
+            )
+        )
+    terminal_drain = projection_metrics.get("terminal_drain_seconds")
+    if terminal_drain is not None and float(terminal_drain) > 300.0:
+        incidents.append(
+            _incident(
+                int(run_id),
+                "wandb_terminal_drain_slo_violation",
+                "wandb",
+                f"terminal_drain_seconds={float(terminal_drain):.1f}",
+            )
+        )
     recipe_payload = row.get("recipe_payload_json")
     if not isinstance(recipe_payload, Mapping):
         recipe_payload = {}
@@ -417,6 +448,7 @@ def run_projection(conn, run_id: int) -> dict[str, Any]:
             "oldest_unconfirmed_submitted_at": diagnostics.get("oldest_unconfirmed_submitted_at"),
             "artifact_status": row.get("artifact_status"),
             "artifact_projection_attempts": int(row.get("artifact_projection_attempts") or 0),
+            "telemetry_v2": projection_metrics,
         },
         "telemetry_integrity": {
             "required": int(row.get("telemetry_protocol_version") or 1) == 2,
@@ -627,7 +659,7 @@ def follow_run(
             started = clock()
             try:
                 projection = run_projection(current_conn, int(run_id))
-            except (OperationalError, InterfaceError):
+            except OperationalError, InterfaceError:
                 if connection_factory is None:
                     raise
                 close_connection()
@@ -635,7 +667,7 @@ def follow_run(
                     sleep(max(0.0, float(reconnect_seconds)))
                     try:
                         current_conn = connection_factory()
-                    except (OperationalError, InterfaceError):
+                    except OperationalError, InterfaceError:
                         continue
                     break
                 continue

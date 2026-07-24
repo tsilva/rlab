@@ -161,6 +161,36 @@ class ExperimentCliTests(unittest.TestCase):
             parsed = modal.parse_args(command[3:])
             self.assertGreater(int(getattr(parsed, destination)), 0)
 
+    def test_retry_finalization_scopes_legacy_publication_recovery_to_wandb(self) -> None:
+        args = experiment_cli.build_parser().parse_args(
+            ["retry-finalization", "--run", "184"]
+        )
+        conn = mock.MagicMock()
+        with (
+            mock.patch.object(experiment_cli, "repository_root", return_value=ROOT),
+            mock.patch.object(experiment_cli, "_connect", return_value=conn),
+            mock.patch(
+                "rlab.job_queue.finalization_retry_controller_scope",
+                return_value="wandb",
+            ) as scope,
+            mock.patch(
+                "rlab.fleet_service.require_compatible_controller_services"
+            ) as preflight,
+            mock.patch(
+                "rlab.job_queue.cmd_retry_finalization",
+                side_effect=lambda _args: print('{"job":{"id":184}}') or 0,
+            ),
+        ):
+            self.assertEqual(experiment_cli.cmd_retry_finalization(args), 0)
+
+        scope.assert_called_once_with(conn, job_id=184)
+        conn.close.assert_called_once_with()
+        preflight.assert_called_once_with(
+            require_source_current=False,
+            controller_names=("wandb",),
+        )
+        self.assertEqual(args.preflight_controller_scope, "wandb")
+
     def test_follow_reconnect_factory_preserves_direct_database_selection(self) -> None:
         args = experiment_cli.build_parser().parse_args(
             ["follow", "--run", "7", "--jsonl", "--direct"]

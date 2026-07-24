@@ -1111,10 +1111,19 @@ def require_compatible_controller_services(
     *,
     runner: CommandRunner = _run_command,
     require_source_current: bool = True,
+    controller_names: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Fail closed before queue mutation when the persistent control plane is stale."""
 
     selected = paths or default_service_paths()
+    required_names = tuple(
+        CONTROLLER_NAMES if controller_names is None else controller_names
+    )
+    if not required_names:
+        raise ValueError("at least one fleet controller must be required")
+    unknown_names = sorted(set(required_names).difference(CONTROLLER_NAMES))
+    if unknown_names:
+        raise ValueError(f"unknown fleet controller(s): {', '.join(unknown_names)}")
     try:
         status = controller_services_status(selected, runner=runner)
     except OSError as exc:
@@ -1138,14 +1147,14 @@ def require_compatible_controller_services(
         )
 
     compatible = all(
-        row_compatible(name, row)
-        for name, row in status["controllers"].items()
+        row_compatible(name, status["controllers"].get(name, {}))
+        for name in required_names
     )
     if not compatible:
         incompatible = [
             name
-            for name, row in status["controllers"].items()
-            if not row_compatible(name, row)
+            for name in required_names
+            if not row_compatible(name, status["controllers"].get(name, {}))
         ]
         raise RuntimeError(
             "fleet controllers are not installed, running, protocol-compatible, and healthy "
@@ -1223,18 +1232,50 @@ def _publisher_processes(
             continue
         if argv[module_index + 1 : module_index + 2] != ["rlab.fleet_wandb_publisher"]:
             continue
-        module_args = argv[module_index + 1 :]
-        if len(module_args) != 3 or module_args[1] != "--train-job-id":
+        raw_module_args = argv[module_index + 2 :]
+        if len(raw_module_args) % 2:
+            raise RuntimeError(
+                f"refusing to stop W&B publisher pid {pid}: unverified module arguments"
+            )
+        module_args: dict[str, str] = {}
+        allowed_args = {
+            "--expected-source-fingerprint",
+            "--limit",
+            "--train-job-id",
+        }
+        for index in range(0, len(raw_module_args), 2):
+            flag, value = raw_module_args[index : index + 2]
+            if flag not in allowed_args or flag in module_args:
+                raise RuntimeError(
+                    f"refusing to stop W&B publisher pid {pid}: unverified module arguments"
+                )
+            module_args[flag] = value
+        if "--train-job-id" not in module_args:
             raise RuntimeError(
                 f"refusing to stop W&B publisher pid {pid}: unverified module arguments"
             )
         try:
-            if int(module_args[2]) <= 0:
+            if int(module_args["--train-job-id"]) <= 0:
                 raise ValueError
         except ValueError as exc:
             raise RuntimeError(
                 f"refusing to stop W&B publisher pid {pid}: invalid train job id"
             ) from exc
+        if "--limit" in module_args:
+            try:
+                if int(module_args["--limit"]) <= 0:
+                    raise ValueError
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"refusing to stop W&B publisher pid {pid}: invalid limit"
+                ) from exc
+        expected_source_fingerprint = module_args.get("--expected-source-fingerprint")
+        if expected_source_fingerprint is not None and re.fullmatch(
+            r"[0-9a-f]{64}", expected_source_fingerprint
+        ) is None:
+            raise RuntimeError(
+                f"refusing to stop W&B publisher pid {pid}: invalid source fingerprint"
+            )
         cwd = _process_cwd(pid, runner=runner)
         if cwd is None:
             still_running = runner(
@@ -1354,18 +1395,13 @@ def reload_controller_service(
         counter = count_nonterminal_jobs or (
             _default_count_machine_reload_blockers
             if controller == "machine"
-            else _default_count_nonterminal_jobs
+            else _default_count_control_plane_upgrade_blockers
         )
         nonterminal = int(counter(paths.repo_root))
         if nonterminal:
-            description = (
-                "active execution blocker"
-                if controller == "machine"
-                else "nonterminal job"
-            )
             raise RuntimeError(
                 f"refusing to reload the {controller} controller with "
-                f"{nonterminal} {description}(s)"
+                f"{nonterminal} active execution blocker(s)"
             )
     item = controller_service_paths(paths, controller)
     if not item.plist.is_file():
@@ -1769,13 +1805,21 @@ def schema_change_service_guard(
     *,
     runner: CommandRunner = _run_command,
     timeout_seconds: float = DEFAULT_PASS_TIMEOUT_SECONDS + 30,
+    allow_finalizing_jobs: bool = False,
 ):
     candidates = [paths, *(controller_service_paths(paths, name) for name in CONTROLLER_NAMES)]
     loaded = [item for item in candidates if service_is_loaded(item.label, runner=runner)]
-    count = _default_count_nonterminal_jobs(paths.repo_root)
+    counter = (
+        _default_count_control_plane_upgrade_blockers
+        if allow_finalizing_jobs
+        else _default_count_nonterminal_jobs
+    )
+    count = counter(paths.repo_root)
     if count:
+        change_kind = "schema upgrade" if allow_finalizing_jobs else "schema reset"
         raise RuntimeError(
-            f"refusing schema reset with {count} nonterminal job(s); wait for quiescence"
+            f"refusing {change_kind} with {count} active execution blocker(s); "
+            "wait for quiescence"
         )
     if not loaded:
         yield
@@ -1839,6 +1883,16 @@ def _default_count_nonterminal_jobs(repo_root: Path) -> int:
     conn = _connect_queue(repo_root)
     try:
         return int(count_nonterminal_jobs(conn))
+    finally:
+        conn.close()
+
+
+def _default_count_control_plane_upgrade_blockers(repo_root: Path) -> int:
+    from rlab.job_queue import count_control_plane_upgrade_blockers
+
+    conn = _connect_queue(repo_root)
+    try:
+        return int(count_control_plane_upgrade_blockers(conn))
     finally:
         conn.close()
 
@@ -1987,7 +2041,6 @@ def _default_reconcile_eval(
     from rlab.telemetry_v2_controller import (
         archive_once as archive_v2_once,
         finalize_roots_once,
-        project_once as project_v2_once,
     )
     from rlab.telemetry_mailbox import (
         consume_attempt_events,
@@ -2015,13 +2068,10 @@ def _default_reconcile_eval(
             detail["telemetry_v2_finalized_roots"] = finalize_roots_once(conn, limit=100)
         else:
             detail["telemetry_v2_archive_status"] = "unconfigured_fail_closed"
-        if (
-            os.environ.get("RLAB_WANDB_SERVICE_IDENTITY")
-            and os.environ.get("RLAB_WANDB_SERVICE_CREDENTIAL_GENERATION")
-        ):
-            detail["telemetry_v2_projected_rows"] = project_v2_once(conn, limit=100)
-        else:
-            detail["telemetry_v2_projection_status"] = "unconfigured_fail_closed"
+        # W&B projection has exactly one process owner: the persistent W&B
+        # controller. Evaluation may archive canonical telemetry, but must not
+        # open a concurrent SDK session for the same append-only run.
+        detail["telemetry_v2_projection_status"] = "owned_by_wandb_controller"
         storage_bytes = mailbox_storage_bytes(conn)
         detail["metric_mailbox_bytes"] = storage_bytes
         detail["metric_mailbox_pressure"] = (

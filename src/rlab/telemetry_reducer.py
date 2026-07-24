@@ -21,9 +21,7 @@ def reduce_run_integrity(conn, *, train_job_id: int) -> dict[str, Any]:
             if not job:
                 raise ValueError(f"unknown train job: {train_job_id}")
             generation = int(job["telemetry_generation"])
-            policy = str(
-                job["telemetry_durability_policy"] or "local_singlecopy_optout_v1"
-            )
+            policy = str(job["telemetry_durability_policy"] or "local_singlecopy_optout_v1")
             cur.execute(
                 """
                 SELECT obligation_key, expected_disposition, realized_disposition
@@ -35,8 +33,7 @@ def reduce_run_integrity(conn, *, train_job_id: int) -> dict[str, Any]:
             )
             obligations = [dict(row) for row in cur.fetchall()]
             expected = {
-                str(row["obligation_key"]): str(row["expected_disposition"])
-                for row in obligations
+                str(row["obligation_key"]): str(row["expected_disposition"]) for row in obligations
             }
             realized = {
                 str(row["obligation_key"]): str(row["realized_disposition"])
@@ -74,12 +71,13 @@ def reduce_run_integrity(conn, *, train_job_id: int) -> dict[str, Any]:
                 {"run": int(train_job_id), "generation": generation},
             )
             coverage = {
-                int(row["producer_ordinal"]): int(row["last_sequence"])
-                for row in cur.fetchall()
+                int(row["producer_ordinal"]): int(row["last_sequence"]) for row in cur.fetchall()
             }
             cur.execute(
                 """
-                SELECT count(*) AS segments,
+                SELECT count(DISTINCT (
+                         s.producer_ordinal, s.first_sequence, s.last_sequence
+                       )) AS segments,
                        count(r.*) AS receipts
                 FROM telemetry_archive_segments s
                 LEFT JOIN telemetry_archive_receipts r
@@ -170,7 +168,7 @@ def reduce_run_integrity(conn, *, train_job_id: int) -> dict[str, Any]:
             projection = cur.fetchone()
             wandb_enabled = bool((job["train_config"] or {}).get("wandb"))
             wandb_terminal = (not wandb_enabled) or (
-                projection is not None and str(projection["state"]) == "active"
+                projection is not None and str(projection["state"]) == "complete"
             )
             cur.execute(
                 """
@@ -187,12 +185,10 @@ def reduce_run_integrity(conn, *, train_job_id: int) -> dict[str, Any]:
                 and int(receipt_counts["receipts"])
                 >= int(receipt_counts["segments"]) * required_per_segment
                 and root["finalized_at"] is not None
-                and (datetime.now(UTC) - root["finalized_at"]).total_seconds()
-                >= 7 * 24 * 60 * 60
+                and (datetime.now(UTC) - root["finalized_at"]).total_seconds() >= 7 * 24 * 60 * 60
             )
             cleanup_eligible = bool(
-                (result.cleanup_eligible and facts and wandb_terminal)
-                or legacy_cleanup_eligible
+                (result.cleanup_eligible and facts and wandb_terminal) or legacy_cleanup_eligible
             )
             reasons = list(result.reasons)
             if result.exact and not facts:
@@ -216,9 +212,7 @@ def reduce_run_integrity(conn, *, train_job_id: int) -> dict[str, Any]:
                     "root_sha256": None if not root else str(root["root_sha256"]),
                     "durability_policy": policy,
                     "receipts": int(receipt_counts["receipts"]),
-                    "required_receipts": (
-                        int(receipt_counts["segments"]) * required_per_segment
-                    ),
+                    "required_receipts": (int(receipt_counts["segments"]) * required_per_segment),
                 },
                 "recovery_backlog": recovery_pending,
                 "executor_health": "healthy" if not recovery_pending else "backlogged",

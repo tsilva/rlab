@@ -1102,6 +1102,56 @@ class WandbPublisherTests(unittest.TestCase):
         with self.assertRaises(WandbArtifactConflictError):
             _artifact_receipts_from_remote(remote, [payload])
 
+    def test_artifact_receipt_can_reuse_one_remote_membership_snapshot(self) -> None:
+        payload = {
+            "train_config": {"wandb_run_id": "rlab-7"},
+            "train_job_id": 7,
+            "ledger_id": 3,
+            "artifact_kind": "checkpoint",
+            "publication_role": "availability",
+            "promotion_revision": 0,
+            "publication_stream_id": "artifact-v2-7-3-availability-r0",
+            "announcement_sha256": "1" * 64,
+            "checkpoint_step": 300,
+            "checkpoint_sha256": "2" * 64,
+            "checkpoint_uri": "s3://bucket/model.zip",
+            "metadata_uri": "s3://bucket/metadata.json",
+            "metadata_sha256": "3" * 64,
+            "recipe_uri": "s3://bucket/recipe.json",
+            "recipe_sha256": "4" * 64,
+            "artifact_aliases": ["step-300"],
+        }
+        artifact = SimpleNamespace(
+            type="model",
+            version="v4",
+            qualified_name="tsilva/project/rlab-7-checkpoint:v4",
+            aliases=["latest", "step-300"],
+            metadata={
+                "artifact_publication_schema": "v2",
+                "train_job_id": 7,
+                "ledger_id": 3,
+                "artifact_kind": "checkpoint",
+                "announcement_sha256": "1" * 64,
+                "checkpoint_step": 300,
+                "checkpoint_sha256": "2" * 64,
+                "artifact_storage_uri": "s3://bucket/model.zip",
+                "metadata_uri": "s3://bucket/metadata.json",
+                "metadata_sha256": "3" * 64,
+                "recipe_uri": "s3://bucket/recipe.json",
+                "recipe_sha256": "4" * 64,
+            },
+        )
+        logged_artifacts = mock.Mock(side_effect=AssertionError("snapshot must be reused"))
+
+        receipts = _artifact_receipts_from_remote(
+            SimpleNamespace(logged_artifacts=logged_artifacts),
+            [payload],
+            artifacts=[artifact],
+        )
+
+        self.assertEqual(receipts[0]["artifact_version"], "v4")
+        logged_artifacts.assert_not_called()
+
     def test_deduplicated_promotion_artifact_confirms_availability_receipt(self) -> None:
         payload = {
             "train_config": {"wandb_run_id": "rlab-7"},
@@ -1580,7 +1630,8 @@ class WandbPublisherTests(unittest.TestCase):
             {
                 "stream_id": "train-7",
                 "final_sequence": 3,
-                "published_sequence": 3,
+                "submitted_sequence": 3,
+                "all_batches_wandb_confirmed": True,
             }
         ]
         cursor.rowcount = 1
@@ -1618,6 +1669,38 @@ class WandbPublisherTests(unittest.TestCase):
         ]
         self.assertEqual(len(complete), 1)
 
+    def test_finishing_run_waits_for_remote_batch_confirmation(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.side_effect = [
+            {"acquired": True},
+            {
+                "id": 7,
+                "train_config": {
+                    "wandb_run_id": "run-7",
+                    "game": "SuperMarioBros-Nes-v0",
+                },
+                "outcome": "not_accepted",
+                "promotion_revision": 0,
+                "promotion_json": {},
+            },
+        ]
+        cursor.fetchall.return_value = [
+            {
+                "stream_id": "train-7",
+                "final_sequence": 3,
+                "submitted_sequence": 3,
+                "all_batches_wandb_confirmed": False,
+            }
+        ]
+
+        with mock.patch(
+            "rlab.fleet_wandb_publisher._wandb_api_run"
+        ) as remote:
+            self.assertFalse(finalize_finishing_run(conn, 7))
+
+        remote.assert_not_called()
+
     def test_wandb_failure_remains_retryable_finalization_work(self) -> None:
         conn = mock.MagicMock()
         cursor = conn.cursor.return_value.__enter__.return_value
@@ -1638,7 +1721,8 @@ class WandbPublisherTests(unittest.TestCase):
             {
                 "stream_id": "train-7",
                 "final_sequence": 3,
-                "published_sequence": 3,
+                "submitted_sequence": 3,
+                "all_batches_wandb_confirmed": True,
             }
         ]
 
@@ -1693,7 +1777,12 @@ class WandbPublisherTests(unittest.TestCase):
             },
         ]
         cursor.fetchall.return_value = [
-            {"stream_id": "train-7", "final_sequence": 3, "published_sequence": 3}
+            {
+                "stream_id": "train-7",
+                "final_sequence": 3,
+                "submitted_sequence": 3,
+                "all_batches_wandb_confirmed": True,
+            }
         ]
         cursor.rowcount = 1
         artifact = SimpleNamespace(
@@ -1758,7 +1847,12 @@ class WandbPublisherTests(unittest.TestCase):
             },
         ]
         cursor.fetchall.return_value = [
-            {"stream_id": "train-7", "final_sequence": 3, "published_sequence": 3}
+            {
+                "stream_id": "train-7",
+                "final_sequence": 3,
+                "submitted_sequence": 3,
+                "all_batches_wandb_confirmed": True,
+            }
         ]
         remote = SimpleNamespace(
             state="finished",

@@ -15,7 +15,8 @@ from typing import Final
 
 CANONICAL_FORMAT_VERSION: Final = "canonical-jsonl-v1"
 ADAPTER_VERSION: Final = "telemetry-adapters-v1"
-NORMALIZATION_VERSION: Final = "wandb-normalization-v1"
+NORMALIZATION_VERSION: Final = "wandb-normalization-v3"
+WANDB_MAX_METRIC_ROWS_PER_EVENT: Final = 1
 EVIDENCE_VERSION: Final = "telemetry-evidence-v1"
 
 DURABILITY_POLICIES: Final = {
@@ -81,11 +82,7 @@ def require_exact_contract_match(
                 *expected.keys(),
                 *observed.keys(),
             }
-            - {
-                key
-                for key in set(expected) & set(observed)
-                if expected[key] == observed[key]
-            }
+            - {key for key in set(expected) & set(observed) if expected[key] == observed[key]}
         )
         raise TelemetryContractError(
             f"{label} mismatch: fields={differing} "
@@ -204,9 +201,7 @@ class CanonicalAdapterRegistry:
                 "type": marker,
                 "sha256": _require_sha256(payload["sha256"], "preview sha256"),
                 "media_type": str(payload["media_type"]),
-                "size_bytes": _require_nonnegative_int(
-                    payload["size_bytes"], "preview size_bytes"
-                ),
+                "size_bytes": _require_nonnegative_int(payload["size_bytes"], "preview size_bytes"),
                 "uri": _require_immutable_uri(payload.get("uri")),
                 "metadata": self.encode(payload.get("metadata") or {}),
             }
@@ -477,7 +472,13 @@ def normalize_wandb_rows(
     raw_outputs: list[tuple[str, Mapping[str, object], int | None]]
     if event.kind == "metric_batch" and isinstance(frames, Sequence):
         raw_outputs = []
-        for frame in frames:
+        history_frames = [
+            frame
+            for frame in frames
+            if isinstance(frame, Mapping) and str(frame.get("kind") or "history") == "history"
+        ]
+        selected_frames = history_frames[-WANDB_MAX_METRIC_ROWS_PER_EVENT:]
+        for frame in selected_frames:
             if not isinstance(frame, Mapping):
                 raise TelemetryContractError("metric batch frames must be mappings")
             frame_payload = frame.get("payload")
@@ -623,7 +624,9 @@ def build_training_success_scope_exact(
     if contract.get("checkpoint_eval_backend") != "none":
         raise TelemetryContractError("training-success scope requires evaluation disabled")
     if not contract.get("deterministic_search_workflow"):
-        raise TelemetryContractError("training-success scope requires declared deterministic search")
+        raise TelemetryContractError(
+            "training-success scope requires declared deterministic search"
+        )
     for key in (
         "canonical_goal_sha256",
         "effective_goal_contract_sha256",
@@ -738,8 +741,7 @@ def require_comparable_run_facts(
         raise TelemetryContractError("run facts do not share one cohort manifest")
     if require_complete_cohort:
         expected = {
-            int(seed)
-            for seed in facts[0].get("cohort_manifest", {}).get("expected_seeds", [])
+            int(seed) for seed in facts[0].get("cohort_manifest", {}).get("expected_seeds", [])
         }
         observed = {int(fact["seed"]) for fact in facts}
         if observed != expected:

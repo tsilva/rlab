@@ -281,10 +281,27 @@ def cmd_retry(args: argparse.Namespace) -> int:
 
 def cmd_retry_finalization(args: argparse.Namespace) -> int:
     from rlab.fleet_service import require_compatible_controller_services
-    from rlab.job_queue import cmd_retry_finalization as queue_retry_finalization
+    from rlab.job_queue import (
+        cmd_retry_finalization as queue_retry_finalization,
+        finalization_retry_controller_scope,
+    )
 
-    require_compatible_controller_services(require_source_current=False)
+    root = repository_root()
+    conn = _connect(args, root)
+    try:
+        controller_scope = finalization_retry_controller_scope(
+            conn,
+            job_id=int(args.run_id),
+        )
+    finally:
+        conn.close()
+    controller_names = ("wandb",) if controller_scope == "wandb" else None
+    require_compatible_controller_services(
+        require_source_current=False,
+        controller_names=controller_names,
+    )
     args.job_id = args.run_id
+    args.preflight_controller_scope = controller_scope
     args.json = True
     code, payload = _call_json_command(queue_retry_finalization, args)
     print(json.dumps(json_safe(payload), sort_keys=True))

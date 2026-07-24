@@ -109,7 +109,9 @@ def _controller_machines(repo_root: Path) -> tuple[str, ...]:
             maintenance_due = now - marker.stat().st_mtime >= 3600.0
         except FileNotFoundError:
             maintenance_due = True
-        if maintenance_due:
+        if maintenance_due and name not in selected:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch()
             selected.add(name)
     return tuple(sorted(selected))
 
@@ -204,9 +206,7 @@ def _wandb_actor_watchdog_reason(
         return None
     try:
         progress_at = float(
-            state.get("progress_at")
-            or state.get("updated_at")
-            or state["session_started_at"]
+            state.get("progress_at") or state.get("updated_at") or state["session_started_at"]
         )
     except KeyError, TypeError, ValueError:
         return None
@@ -578,11 +578,26 @@ def run_evaluation_controller(repo_root: Path, *, once: bool = False) -> int:
         assertion.close()
 
 
+def _reconcile_v2_telemetry(conn) -> dict[str, int]:
+    from rlab.telemetry_v2_controller import (
+        archive_once,
+        finalize_roots_once,
+        project_once,
+    )
+
+    return {
+        "archived_segments": archive_once(conn, limit=100),
+        "finalized_roots": finalize_roots_once(conn, limit=100),
+        "projected_rows": project_once(conn, limit=500),
+    }
+
+
 def run_wandb_manager(repo_root: Path, *, once: bool = False) -> int:
     from rlab.telemetry_mailbox import (
         pending_metric_run_ids,
         schedule_artifact_publications,
     )
+    from rlab.telemetry_wandb_projection import pending_projection_run_ids
 
     actors: dict[int, subprocess.Popen] = {}
     ownership_backoff: dict[int, float] = {}
@@ -595,6 +610,7 @@ def run_wandb_manager(repo_root: Path, *, once: bool = False) -> int:
     started_at = time.time()
     last_success_at: float | None = None
     backoff = POLL_SECONDS
+    v2_work = 0
     try:
         _write_controller_heartbeat(
             heartbeat,
@@ -761,7 +777,16 @@ def run_wandb_manager(repo_root: Path, *, once: bool = False) -> int:
                         _record_wandb_actor_recovered(conn, run_id=run_id)
                     pending_recoveries.clear()
                     schedule_artifact_publications(conn, limit=10)
-                    run_ids = pending_metric_run_ids(conn, limit=10_000)
+                    v2_result = _reconcile_v2_telemetry(conn)
+                    v2_work = sum(int(value) for value in v2_result.values())
+                    run_ids = list(
+                        dict.fromkeys(
+                            [
+                                *pending_metric_run_ids(conn, limit=10_000),
+                                *pending_projection_run_ids(conn, limit=10_000),
+                            ]
+                        )
+                    )
                 finally:
                     conn.close()
             except Exception as exc:
@@ -779,7 +804,7 @@ def run_wandb_manager(repo_root: Path, *, once: bool = False) -> int:
                 time.sleep(backoff)
                 backoff = min(CONTROLLER_MAX_BACKOFF_SECONDS, backoff * 2)
                 continue
-            assertion.update(bool(run_ids or actors))
+            assertion.update(bool(run_ids or actors or v2_work))
             for run_id in run_ids:
                 if len(actors) >= MAX_WANDB_ACTORS:
                     break
@@ -843,7 +868,7 @@ def run_wandb_manager(repo_root: Path, *, once: bool = False) -> int:
                 else (
                     "starting"
                     if actor_starting
-                    else ("reconciling" if run_ids or actors else "idle")
+                    else ("reconciling" if run_ids or actors or v2_work else "idle")
                 )
             )
             actor_error = (
@@ -922,9 +947,7 @@ def run_workspace_controller(repo_root: Path, *, once: bool = False) -> int:
             try:
                 conn = connect(database_url(use_direct=True))
                 try:
-                    expired_operations = quarantine_expired_host_operation_leases(
-                        conn, limit=25
-                    )
+                    expired_operations = quarantine_expired_host_operation_leases(conn, limit=25)
                     protocol_mode = workspace_protocol_mode(conn)
                     policy_path = str(
                         os.environ.get("RLAB_ARTIFACT_DURABILITY_POLICY_FILE") or ""
@@ -944,9 +967,7 @@ def run_workspace_controller(repo_root: Path, *, once: bool = False) -> int:
                     for launch_id in launch_ids:
                         try:
                             reduce_cleanup_proof(conn, launch_id=launch_id)
-                            record_proof_reducer_result(
-                                conn, launch_id=launch_id, ready=True
-                            )
+                            record_proof_reducer_result(conn, launch_id=launch_id, ready=True)
                             reduced += 1
                         except WorkspaceNotReady as exc:
                             record_proof_reducer_result(

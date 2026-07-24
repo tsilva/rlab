@@ -119,7 +119,7 @@ class CanonicalTelemetryTests(unittest.TestCase):
         self.assertEqual(rows[0]["payload"]["_rlab_output_ordinal"], 9)
         self.assertIn("event-1", rows[0]["stable_key"])
 
-    def test_multirow_metric_batch_gets_contiguous_output_ordinals(self) -> None:
+    def test_multirow_metric_batch_projects_latest_frame(self) -> None:
         event = self.event(
             1,
             {
@@ -145,8 +145,78 @@ class CanonicalTelemetryTests(unittest.TestCase):
             payload=event.payload,
         )
         rows = normalize_wandb_rows(event, first_ordinal=7)
-        self.assertEqual([7, 8], [row["ordinal"] for row in rows])
-        self.assertEqual([10, 20], [row["payload"]["global_step"] for row in rows])
+        self.assertEqual([7], [row["ordinal"] for row in rows])
+        self.assertEqual([20], [row["payload"]["global_step"] for row in rows])
+
+    def test_empty_metric_batch_emits_no_diagnostic_row(self) -> None:
+        event = self.event(1, {"frames": []})
+        event = CanonicalEvent(
+            producer=event.producer,
+            source_sequence=event.source_sequence,
+            event_id=event.event_id,
+            kind="metric_batch",
+            payload=event.payload,
+        )
+
+        rows = normalize_wandb_rows(event, first_ordinal=7)
+
+        self.assertEqual([], rows)
+
+    def test_metric_batch_projection_is_deterministically_downsampled(self) -> None:
+        event = self.event(
+            1,
+            {
+                "frames": [
+                    {
+                        "kind": "history",
+                        "global_step": index * 8192,
+                        "payload": {"loss": float(index)},
+                    }
+                    for index in range(100)
+                ]
+            },
+        )
+        event = CanonicalEvent(
+            producer=event.producer,
+            source_sequence=event.source_sequence,
+            event_id=event.event_id,
+            kind="metric_batch",
+            payload=event.payload,
+        )
+
+        rows = normalize_wandb_rows(event, first_ordinal=7)
+
+        self.assertEqual(1, len(rows))
+        self.assertEqual(99 * 8192, rows[-1]["payload"]["global_step"])
+        self.assertEqual([7], [row["ordinal"] for row in rows])
+
+    def test_thousand_frame_batch_selects_only_latest_history_row(self) -> None:
+        event = self.event(
+            1,
+            {
+                "frames": [
+                    {
+                        "kind": "history",
+                        "global_step": index * 2048,
+                        "payload": {"loss": float(index)},
+                    }
+                    for index in range(1_000)
+                ]
+            },
+        )
+        event = CanonicalEvent(
+            producer=event.producer,
+            source_sequence=event.source_sequence,
+            event_id=event.event_id,
+            kind="metric_batch",
+            payload=event.payload,
+        )
+
+        rows = normalize_wandb_rows(event, first_ordinal=11)
+
+        self.assertEqual(1, len(rows))
+        self.assertEqual(999 * 2048, rows[0]["payload"]["global_step"])
+        self.assertEqual(11, rows[0]["ordinal"])
 
     def test_evaluation_contract_mismatch_matrix_fails_exactly(self) -> None:
         base = eval_contract()

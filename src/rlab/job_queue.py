@@ -847,7 +847,7 @@ DECLARE
   existing_event RECORD;
   existing_ledger JSONB;
   close_fence JSONB;
-  ledger_id BIGINT;
+  event_ledger_id BIGINT;
   inserted_id BIGINT;
 BEGIN
   IF p_event_type NOT IN (
@@ -918,10 +918,11 @@ BEGIN
         RAISE EXCEPTION 'checkpoint close fence conflicts with accepted payload';
       END IF;
     ELSE
-      ledger_id := (p_payload->>'ledger_id')::bigint;
+      event_ledger_id := (p_payload->>'ledger_id')::bigint;
       SELECT announcement_json INTO existing_ledger
-      FROM artifact_announcement_ledger
-      WHERE train_job_id = derived_train_job_id AND ledger_id = ledger_id
+      FROM artifact_announcement_ledger ledger
+      WHERE ledger.train_job_id = derived_train_job_id
+        AND ledger.ledger_id = event_ledger_id
       FOR UPDATE;
       IF FOUND THEN
         IF existing_ledger = p_payload THEN
@@ -935,7 +936,7 @@ BEGIN
       JOIN worker_attempts a ON a.attempt_id = e.attempt_id
       WHERE a.train_job_id = derived_train_job_id
         AND e.event_type IN ('checkpoint_ready', 'checkpoint_tombstone')
-        AND (e.payload_json->>'ledger_id')::bigint = ledger_id
+        AND (e.payload_json->>'ledger_id')::bigint = event_ledger_id
       FOR UPDATE OF e;
       IF FOUND THEN
         IF existing_event.event_id = p_event_id
@@ -2906,6 +2907,14 @@ def enqueue_train_job(
                     ) AS installed_marker
                   FROM telemetry_rollout_controls
                   WHERE singleton = TRUE
+                ),
+                wandb_capacity AS MATERIALIZED (
+                  SELECT count(*) AS occupied
+                  FROM train_jobs j
+                  WHERE COALESCE((j.train_config->>'wandb')::boolean, FALSE)
+                    AND j.live_publication_status NOT IN (
+                      'complete', 'disabled', 'failed'
+                    )
                 )
                 INSERT INTO train_jobs (
                   goal_slug, goal_path, goal_sha256, recipe_slug, recipe_path, recipe_sha256,
@@ -2930,7 +2939,8 @@ def enqueue_train_job(
                   %(submission_ordinal)s, %(request_hash)s,
                   %(retry_of_job_id)s, %(run_name)s,
                   %(run_description)s, %(seed)s, %(wandb_group)s, %(wandb_tags)s
-                FROM cutover
+                FROM cutover CROSS JOIN wandb_capacity
+                WHERE NOT %(wandb_enabled)s OR wandb_capacity.occupied < 16
                 RETURNING *
                 """,
                 {
@@ -2960,9 +2970,18 @@ def enqueue_train_job(
                     "seed": seed,
                     "wandb_group": wandb_group,
                     "wandb_tags": normalized_tags,
+                    "wandb_enabled": bool(config.get("wandb", False)),
                 },
             )
-            row = dict(cur.fetchone())
+            inserted = cur.fetchone()
+            if inserted is None and bool(config.get("wandb", False)):
+                raise RuntimeError(
+                    "W&B diagnostic projection admission is full "
+                    "(16 single-writer actors); retry after a run drains"
+                )
+            if inserted is None:
+                raise RuntimeError("telemetry cutover admission is unavailable")
+            row = dict(inserted)
             record_job_event(
                 conn,
                 job_id=int(row["id"]),
@@ -3168,12 +3187,8 @@ def claim_job_launch(
                 "configuration_sha256": _hash_json(dict(job.get("train_config") or {})),
                 "absolute_source_paths": [str(launch.get("output_uri") or output_uri)],
                 "wandb_routing": {
-                    "run_id": str(
-                        (job.get("train_config") or {}).get("wandb_run_id") or ""
-                    ),
-                    "project": str(
-                        (job.get("train_config") or {}).get("wandb_project") or ""
-                    ),
+                    "run_id": str((job.get("train_config") or {}).get("wandb_run_id") or ""),
+                    "project": str((job.get("train_config") or {}).get("wandb_project") or ""),
                 },
                 "recovery_owner": "rlab-telemetry-recovery",
             }
@@ -3199,9 +3214,7 @@ def claim_job_launch(
                     "run": int(job["id"]),
                     "generation": int(job.get("telemetry_generation") or 1),
                     "sha256": recovery_sha256,
-                    "policy": str(
-                        job.get("telemetry_durability_policy") or "queued_dual_r2_v1"
-                    ),
+                    "policy": str(job.get("telemetry_durability_policy") or "queued_dual_r2_v1"),
                     "paths": recovery_manifest["absolute_source_paths"],
                     "manifest": json_arg(recovery_manifest),
                 },
@@ -3806,6 +3819,48 @@ def count_nonterminal_jobs(conn=None) -> int:
             conn.close()
 
 
+def count_control_plane_upgrade_blockers(conn=None) -> int:
+    """Count live execution work that an additive control-plane upgrade may not interrupt."""
+
+    owned_connection = conn is None
+    if owned_connection:
+        conn = connect(database_url())
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('train_jobs') AS train_jobs")
+            schema_row = cur.fetchone()
+            if not schema_row or schema_row["train_jobs"] is None:
+                return 0
+            cur.execute(
+                """
+                SELECT
+                  (SELECT COUNT(*) FROM train_jobs
+                   WHERE status IN ('pending', 'launching', 'starting', 'running'))
+                  +
+                  (SELECT COUNT(*) FROM eval_jobs
+                   WHERE status IN ('pending', 'dispatching', 'submitted', 'blocked_budget'))
+                  +
+                  (SELECT COUNT(*) FROM job_launches
+                   WHERE state IN ('launching', 'running'))
+                  +
+                  (SELECT COUNT(*) FROM eval_attempts
+                   WHERE status IN ('dispatching', 'submitted'))
+                  +
+                  (SELECT COUNT(*) FROM worker_attempts
+                   WHERE status IN ('launching', 'running'))
+                  +
+                  (SELECT COUNT(*) FROM host_operation_leases
+                   WHERE state IN ('registered', 'running', 'reconciling'))
+                  AS count
+                """
+            )
+            row = cur.fetchone()
+        return int(row["count"] if row else 0)
+    finally:
+        if owned_connection:
+            conn.close()
+
+
 def count_machine_reload_blockers(conn=None) -> int:
     """Count execution-side work that cannot tolerate a machine-controller reload."""
 
@@ -4360,8 +4415,42 @@ def retry_train_job(
         return result
 
 
-def retry_train_job_finalization(conn, *, job_id: int) -> dict[str, Any]:
+def finalization_retry_controller_scope(conn, *, job_id: int) -> str:
+    """Return the minimum safe controller preflight for a finalization retry."""
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT status, live_publication_status
+            FROM train_jobs
+            WHERE id = %(job_id)s
+            """,
+            {"job_id": int(job_id)},
+        )
+        source = cur.fetchone()
+    if not source:
+        raise ValueError(f"job {job_id} does not exist")
+    status = str(source.get("status") or "")
+    publication_status = str(source.get("live_publication_status") or "")
+    if status in {"canceled", "succeeded"}:
+        return "wandb"
+    if status == "finalizing" and publication_status == "failed":
+        return "wandb"
+    return "all"
+
+
+def retry_train_job_finalization(
+    conn,
+    *,
+    job_id: int,
+    preflight_controller_scope: str | None = None,
+) -> dict[str, Any]:
     """Reopen post-train work or restamp a completed publication without retraining."""
+
+    if preflight_controller_scope not in {None, "all", "wandb"}:
+        raise ValueError(
+            f"invalid finalization retry controller scope: {preflight_controller_scope!r}"
+        )
 
     with conn:
         acquire_fleet_admission_xact_lock(conn)
@@ -4408,6 +4497,7 @@ def retry_train_job_finalization(conn, *, job_id: int) -> dict[str, Any]:
             source = cur.fetchone()
             if not source:
                 raise ValueError(f"job {job_id} does not exist")
+            source_status = str(source["status"])
             if str(source["status"]) == "canceled":
                 active_counts = {
                     key: int(source.get(key) or 0)
@@ -4460,17 +4550,16 @@ def retry_train_job_finalization(conn, *, job_id: int) -> dict[str, Any]:
                     metadata={"launch_state": "canceled", "publication_only": True},
                 )
                 return dict(row)
-            if str(source["status"]) == "succeeded":
-                if str(source["launch_state"]) != "succeeded":
-                    raise ValueError(f"job {job_id} does not have a successful training launch")
+            if source_status == "succeeded":
                 if str(source.get("live_publication_status") or "") != "complete":
                     raise ValueError(
                         f"succeeded job {job_id} does not have a complete W&B publication"
                     )
+                missing_artifact_receipts = int(source.get("missing_artifact_receipts") or 0)
                 cur.execute(
                     """
                     UPDATE train_jobs
-                    SET live_publication_status = 'finishing',
+                    SET live_publication_status = %(publication_status)s,
                       live_publication_attempts = 0,
                       live_publication_next_retry_at = now(),
                       live_publication_error = NULL
@@ -4478,7 +4567,12 @@ def retry_train_job_finalization(conn, *, job_id: int) -> dict[str, Any]:
                       AND live_publication_status = 'complete'
                     RETURNING *
                     """,
-                    {"job_id": int(job_id)},
+                    {
+                        "job_id": int(job_id),
+                        "publication_status": (
+                            "pending" if missing_artifact_receipts else "finishing"
+                        ),
+                    },
                 )
                 row = cur.fetchone()
                 if not row:
@@ -4487,12 +4581,26 @@ def retry_train_job_finalization(conn, *, job_id: int) -> dict[str, Any]:
                     conn,
                     job_id=int(job_id),
                     event_type="finalization_retried",
-                    message="operator requested canonical W&B publication restamp",
-                    metadata={"launch_state": "succeeded", "restamp_only": True},
+                    message=(
+                        "operator requested missing artifact publication recovery"
+                        if missing_artifact_receipts
+                        else "operator requested canonical W&B publication restamp"
+                    ),
+                    metadata={
+                        "launch_state": str(source.get("launch_state") or ""),
+                        "restamp_only": not missing_artifact_receipts,
+                        "missing_artifact_receipts": missing_artifact_receipts,
+                    },
                 )
                 return dict(row)
-            if str(source["status"]) != "finalization_failed":
-                raise ValueError(f"job {job_id} is not finalization_failed or succeeded")
+            legacy_stuck_publication = (
+                source_status == "finalizing"
+                and str(source.get("live_publication_status") or "") == "failed"
+            )
+            if source_status != "finalization_failed" and not legacy_stuck_publication:
+                raise ValueError(
+                    f"job {job_id} is not finalization_failed, publication-stuck, or succeeded"
+                )
             launch_state = str(source.get("launch_state") or "")
             publication_failed = str(source.get("live_publication_status") or "") == "failed"
             active_counts = {
@@ -4537,6 +4645,13 @@ def retry_train_job_finalization(conn, *, job_id: int) -> dict[str, Any]:
                 )
             )
             publication_only = canceled_publication_only or successful_publication_only
+            if legacy_stuck_publication and not publication_only:
+                raise ValueError(
+                    f"publication-stuck job {job_id} lacks publication-only recovery evidence"
+                )
+            actual_controller_scope = "wandb" if publication_only else "all"
+            if preflight_controller_scope == "wandb" and actual_controller_scope != "wandb":
+                raise RuntimeError(f"job {job_id} changed after its W&B-only controller preflight")
             if launch_state == "canceled" and not canceled_publication_only:
                 missing = [key for key, value in active_counts.items() if value]
                 raise ValueError(
@@ -4598,11 +4713,12 @@ def retry_train_job_finalization(conn, *, job_id: int) -> dict[str, Any]:
                       live_publication_attempts = 0,
                       live_publication_next_retry_at = now(),
                       live_publication_error = NULL
-                    WHERE id = %(job_id)s AND status = 'finalization_failed'
+                    WHERE id = %(job_id)s AND status = %(source_status)s
                     RETURNING *
                     """,
                     {
                         "job_id": int(job_id),
+                        "source_status": source_status,
                         "publication_status": "pending" if residual_batches else "finishing",
                     },
                 )
@@ -4965,9 +5081,7 @@ def finish_train_launch_from_result(
                     {
                         "job_id": updated_launch["job_id"],
                         "eval_status": (
-                            "awaiting_artifact_recovery"
-                            if checkpoint_recovery
-                            else "finalizing"
+                            "awaiting_artifact_recovery" if checkpoint_recovery else "finalizing"
                         ),
                         "checkpoint_recovery": checkpoint_recovery,
                         "eval_error": (
@@ -5407,7 +5521,10 @@ def _machine_capacities(path: Path = DEFAULT_MACHINE_REGISTRY) -> dict[str, int]
 def cmd_setup(args: argparse.Namespace) -> int:
     from rlab.fleet_service import default_service_paths, schema_change_service_guard
 
-    with schema_change_service_guard(default_service_paths()):
+    with schema_change_service_guard(
+        default_service_paths(),
+        allow_finalizing_jobs=True,
+    ):
         conn = _connect_from_args(args)
         try:
             apply_schema(conn)
@@ -5884,7 +6001,11 @@ def cmd_retry(args: argparse.Namespace) -> int:
 def cmd_retry_finalization(args: argparse.Namespace) -> int:
     conn = _connect_from_args(args)
     try:
-        row = retry_train_job_finalization(conn, job_id=int(args.job_id))
+        row = retry_train_job_finalization(
+            conn,
+            job_id=int(args.job_id),
+            preflight_controller_scope=getattr(args, "preflight_controller_scope", None),
+        )
         dispatch = dispatch_fleet_service(
             "train_finalization_retry",
             entity_kind="train",
