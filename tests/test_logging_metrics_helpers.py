@@ -98,7 +98,6 @@ class MetricsDocumentationTests(unittest.TestCase):
             "train/outcome/success/from/Start/rate/current",
             "eval/full/outcome/reason/stalled/count",
             "eval/full/checkpoint/step",
-            "eval/acceptance/failure/count",
             "train/throughput/loop_seconds",
             "leader/checkpoint/steps_to_goal",
             "leader/checkpoint/local_path",
@@ -116,6 +115,10 @@ class MetricsDocumentationTests(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(ValueError, "unknown metric"):
                     metric_names.validate_metric_name(name, schema_version=5)
+        self.assertEqual(
+            metric_names.validate_metric_name("eval/acceptance/failure/count"),
+            "eval/acceptance/failure/count",
+        )
         with self.assertRaisesRegex(ValueError, "unsupported metrics schema version"):
             metric_names.validate_metric_name("global_step", schema_version=7)
 

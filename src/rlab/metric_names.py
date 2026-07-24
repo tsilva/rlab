@@ -13,20 +13,14 @@ EVAL_CHECKPOINT_STEP = "eval/checkpoint_step"
 ORCHESTRATION_EVENT_SEQ = "orchestration/event_seq"
 ORCHESTRATION_EVENT_ID = "orchestration/event_id"
 ORCHESTRATION_QUEUE_DEPTH = "orchestration/outbox/queue_depth"
-ORCHESTRATION_OLDEST_UNPUBLISHED_SECONDS = (
-    "orchestration/outbox/oldest_unpublished_seconds"
-)
+ORCHESTRATION_OLDEST_UNPUBLISHED_SECONDS = "orchestration/outbox/oldest_unpublished_seconds"
 ORCHESTRATION_INGRESS_RATE = "orchestration/outbox/ingress_rate"
 ORCHESTRATION_PUBLISH_RATE = "orchestration/outbox/publish_rate"
-ORCHESTRATION_PUBLICATION_CAPACITY_RATIO = (
-    "orchestration/outbox/publication_capacity_ratio"
-)
+ORCHESTRATION_PUBLICATION_CAPACITY_RATIO = "orchestration/outbox/publication_capacity_ratio"
 ORCHESTRATION_LOCAL_HIGH_WATER = "orchestration/outbox/local_high_water"
 ORCHESTRATION_R2_HIGH_WATER = "orchestration/outbox/r2_high_water"
 ORCHESTRATION_WANDB_HIGH_WATER = "orchestration/outbox/wandb_high_water"
-ORCHESTRATION_WANDB_REMOTE_HIGH_WATER = (
-    "orchestration/outbox/wandb_remote_high_water"
-)
+ORCHESTRATION_WANDB_REMOTE_HIGH_WATER = "orchestration/outbox/wandb_remote_high_water"
 ORCHESTRATION_WANDB_REMOTE_VISIBLE_LAG_SECONDS = (
     "orchestration/outbox/wandb_remote_visible_lag_seconds"
 )
@@ -523,6 +517,12 @@ V5_METRIC_DEFINITIONS = (
         "acceptance evaluation",
     ),
     _definition(
+        EVAL_ACCEPTANCE_FAILURE_COUNT,
+        "Failed planned episodes; zero for acceptance and one for fail-fast rejection.",
+        "episodes",
+        "acceptance evaluation",
+    ),
+    _definition(
         EVAL_ACCEPTANCE_DURATION_SECONDS,
         "Acceptance-worker evaluation wall duration.",
         "seconds",
@@ -805,12 +805,6 @@ V4_ONLY_METRIC_DEFINITIONS = (
     ),
     _definition(
         "eval/{protocol}/checkpoint/step", "Evaluated checkpoint step.", "steps", "evaluation"
-    ),
-    _definition(
-        EVAL_ACCEPTANCE_FAILURE_COUNT,
-        "Failed planned episodes; zero for acceptance and one for fail-fast rejection.",
-        "episodes",
-        "acceptance evaluation",
     ),
     _definition(
         EVAL_SCREEN_PREVIEW,

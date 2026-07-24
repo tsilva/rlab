@@ -232,6 +232,7 @@ exit alone is never scientific success.
 | `eval/acceptance/pass` | Per-checkpoint acceptance result; W&B summarizes its history with max, not as the verdict. | boolean | acceptance evaluation | history |
 | `eval/acceptance/episodes/planned` | Exact episode identities required by the acceptance manifest. | episodes | acceptance evaluation | history |
 | `eval/acceptance/episodes/completed` | Valid planned episode rows completed before acceptance or fail-fast rejection. | episodes | acceptance evaluation | history |
+| `eval/acceptance/failure/count` | Failed planned episodes; zero for acceptance and one for fail-fast rejection. | episodes | acceptance evaluation | history |
 | `eval/acceptance/duration/seconds` | Acceptance-worker evaluation wall duration. | seconds | acceptance evaluation | history |
 | `eval/full/by_start` | Structured full-evaluation evidence by start and reason. | table | evaluation | history |
 | `leader/checkpoint/acceptance_pass` | Diagnostic projection of the promoted-checkpoint verdict; `eval_scope_exact` is authoritative. | boolean | selection | summary |
