@@ -295,6 +295,8 @@ class TrainImageTests(unittest.TestCase):
         self.assertIn('"gpu_plan_sha256"', build)
         self.assertIn("workflow_call:", modal)
         self.assertIn("name: rlab-modal-eval-readiness", modal)
+        self.assertIn("group: rlab-modal-eval-${{ inputs.source_sha }}", modal)
+        self.assertNotIn("group: ${{ github.workflow }}", modal)
 
 
 if __name__ == "__main__":

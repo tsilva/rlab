@@ -70,6 +70,9 @@ class RunAuthorityTests(unittest.TestCase):
                     "max_duration_seconds": 86_400,
                 },
                 "dstack_task": run_id,
+                "runtime_workflow_run_id": "123",
+                "runtime_input_sha256": SHA,
+                "runtime_build_source_sha": "e" * 40,
             },
             wandb={
                 "run_id": run_id,

@@ -279,10 +279,20 @@ class RunSupervisor:
     def validate_runtime(self) -> None:
         runtime = runtime_contract(runtime_image_ref=self.manifest.image_digest)
         observed_source = str(runtime.get("runtime_build_source_sha") or "")
-        if observed_source != self.manifest.source_sha:
+        expected_source = str(
+            self.manifest.compute.get("runtime_build_source_sha") or ""
+        )
+        if observed_source != expected_source:
             raise RuntimeError(
-                "runtime source SHA does not match the immutable run manifest: "
-                f"{observed_source or 'missing'} != {self.manifest.source_sha}"
+                "runtime build source SHA does not match the immutable run manifest: "
+                f"{observed_source or 'missing'} != {expected_source or 'missing'}"
+            )
+        observed_input = str(runtime.get("runtime_input_sha256") or "")
+        expected_input = str(self.manifest.compute.get("runtime_input_sha256") or "")
+        if observed_input != expected_input:
+            raise RuntimeError(
+                "runtime input SHA-256 does not match the immutable run manifest: "
+                f"{observed_input or 'missing'} != {expected_input or 'missing'}"
             )
         if str(os.environ.get("RLAB_ORCHESTRATOR") or "") != "dstack":
             raise RuntimeError("run supervisor may execute only inside a dstack task")
@@ -362,7 +372,9 @@ class RunSupervisor:
                 "recipe_path": str(recipe_path),
                 "recipe_sha256": self.manifest.recipe_sha256,
                 "source_sha": self.manifest.source_sha,
-                "runtime_build_source_sha": self.manifest.source_sha,
+                "runtime_build_source_sha": str(
+                    self.manifest.compute["runtime_build_source_sha"]
+                ),
                 "runtime_input_sha256": str(
                     os.environ.get("RLAB_RUNTIME_INPUT_SHA256") or ""
                 ),

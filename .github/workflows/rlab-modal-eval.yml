@@ -58,7 +58,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ inputs.source_sha }}
+  # Called workflows inherit the caller's github.workflow value. A literal
+  # namespace prevents this job from colliding with the train-image caller.
+  group: rlab-modal-eval-${{ inputs.source_sha }}
   cancel-in-progress: false
 
 jobs:

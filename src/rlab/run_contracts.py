@@ -150,6 +150,22 @@ class RunManifest:
                     f"compute.{label}.max_duration_seconds must be positive"
                 )
         _require_text(self.compute.get("dstack_task"), "compute.dstack_task")
+        _require_text(
+            self.compute.get("runtime_workflow_run_id"),
+            "compute.runtime_workflow_run_id",
+        )
+        _require_sha256(
+            self.compute.get("runtime_input_sha256"),
+            "compute.runtime_input_sha256",
+        )
+        runtime_build_source_sha = _require_text(
+            self.compute.get("runtime_build_source_sha"),
+            "compute.runtime_build_source_sha",
+        )
+        if re.fullmatch(r"[0-9a-f]{40,64}", runtime_build_source_sha) is None:
+            raise ValueError(
+                "compute.runtime_build_source_sha must be a full lowercase Git SHA"
+            )
         if str(self.wandb.get("run_id") or "") != self.run_id:
             raise ValueError("wandb.run_id must equal run_id")
         _require_text(self.wandb.get("entity"), "wandb.entity")

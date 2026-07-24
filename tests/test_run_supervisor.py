@@ -25,6 +25,8 @@ from rlab.run_supervisor import RunSupervisor
 
 
 SOURCE_SHA = "a" * 40
+BUILD_SOURCE_SHA = "f" * 40
+RUNTIME_INPUT_SHA256 = "e" * 64
 IMAGE = "docker:registry.example/rlab@sha256:" + "b" * 64
 GOAL = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml")
 RECIPE = GOAL.parent / "recipes" / "ppo.yaml"
@@ -113,6 +115,9 @@ class RunSupervisorTests(unittest.TestCase):
                     "max_duration_seconds": 3600,
                 },
                 "dstack_task": self.run_id,
+                "runtime_workflow_run_id": "123",
+                "runtime_input_sha256": RUNTIME_INPUT_SHA256,
+                "runtime_build_source_sha": BUILD_SOURCE_SHA,
             },
             wandb={
                 "run_id": self.run_id,
@@ -146,6 +151,33 @@ class RunSupervisorTests(unittest.TestCase):
             repo_root=Path.cwd(),
             work_root=root / "work",
         )
+
+    def test_runtime_verification_uses_build_identity_and_runtime_input(self) -> None:
+        supervisor = self.supervisor()
+        with (
+            patch.dict("os.environ", {"RLAB_ORCHESTRATOR": "dstack"}),
+            patch(
+                "rlab.run_supervisor.runtime_contract",
+                return_value={
+                    "runtime_build_source_sha": BUILD_SOURCE_SHA,
+                    "runtime_input_sha256": RUNTIME_INPUT_SHA256,
+                },
+            ),
+        ):
+            supervisor.validate_runtime()
+
+        with (
+            patch.dict("os.environ", {"RLAB_ORCHESTRATOR": "dstack"}),
+            patch(
+                "rlab.run_supervisor.runtime_contract",
+                return_value={
+                    "runtime_build_source_sha": SOURCE_SHA,
+                    "runtime_input_sha256": RUNTIME_INPUT_SHA256,
+                },
+            ),
+            self.assertRaisesRegex(RuntimeError, "runtime build source SHA"),
+        ):
+            supervisor.validate_runtime()
 
     def test_materializes_exact_mario_acceptance_contract(self) -> None:
         supervisor = self.supervisor()
