@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import urllib.request
 from pathlib import Path
 
-from rlab.model_sources import download_public_run_source
+from rlab.model_sources import _public_json, download_public_run_source
 from rlab.policy_bundle import (
     build_model_document,
     build_recipe_document,
@@ -11,6 +12,7 @@ from rlab.policy_bundle import (
     write_canonical_json,
 )
 from rlab.r2_store import BucketConfig, RunStorageConfig
+from rlab.r2_store import PUBLIC_OBJECT_USER_AGENT
 from rlab.recipe_documents import compose_train_document
 from rlab.run_authority import RunAuthority
 from rlab.run_contracts import PromotionReceipt, new_run_id, utc_now
@@ -20,6 +22,35 @@ from rlab.training_backend import training_backend_config_hash
 GOAL = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml")
 RECIPE = GOAL.parent / "recipes" / "ppo.yaml"
 RUNTIME = "docker:ghcr.io/tsilva/rlab/rlab-train@sha256:" + "b" * 64
+
+
+class _HttpResponse:
+    def __init__(self, payload: bytes):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+    def read(self, _size: int = -1) -> bytes:
+        return self.payload
+
+
+def test_public_json_uses_explicit_rlab_user_agent(monkeypatch) -> None:
+    observed: list[str] = []
+
+    def urlopen(request, *, timeout):
+        assert timeout == 30
+        assert isinstance(request, urllib.request.Request)
+        observed.append(str(request.get_header("User-agent")))
+        return _HttpResponse(b'{"ok":true}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+
+    assert _public_json("https://models.example.test/index.json") == {"ok": True}
+    assert observed == [PUBLIC_OBJECT_USER_AGENT]
 
 
 def _policy_checkpoint(root: Path) -> Path:

@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import tempfile
+import urllib.request
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +18,16 @@ class ObjectNotFound(FileNotFoundError):
 
 class ConditionalWriteConflict(RuntimeError):
     pass
+
+
+PUBLIC_OBJECT_USER_AGENT = "rlab-public-client/1.0 (+https://github.com/tsilva/rlab)"
+
+
+def public_object_request(url: str) -> urllib.request.Request:
+    return urllib.request.Request(
+        str(url),
+        headers={"User-Agent": PUBLIC_OBJECT_USER_AGENT},
+    )
 
 
 def _canonical_json(value: Mapping[str, Any]) -> bytes:

@@ -10,6 +10,7 @@ from typing import Any, Mapping
 from urllib.parse import quote, unquote, urlparse
 
 from rlab.file_utils import file_sha256 as _file_sha256
+from rlab.r2_store import public_object_request
 
 
 file_sha256 = _file_sha256
@@ -362,7 +363,10 @@ def write_downloaded_file(url: str, destination: Path) -> Path:
                 else:
                     import urllib.request
 
-                    with urllib.request.urlopen(url, timeout=60) as response:
+                    with urllib.request.urlopen(
+                        public_object_request(url),
+                        timeout=60,
+                    ) as response:
                         shutil.copyfileobj(response, handle, length=1024 * 1024)
                 handle.flush()
                 os.fsync(handle.fileno())

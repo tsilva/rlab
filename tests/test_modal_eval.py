@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 import time
+import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,8 +13,9 @@ from rlab.eval_backend import EvalHandle
 from rlab.modal_eval_backend import ModalEvalBackend
 from rlab.modal_eval_config import load_modal_eval_config, modal_app_name
 from rlab.modal_eval_protocol import SEED_PROTOCOL, build_execution_contract
-from rlab.modal_eval_storage import file_sha256
+from rlab.modal_eval_storage import file_sha256, write_downloaded_file
 from rlab.modal_eval_worker import execute_attempt
+from rlab.r2_store import PUBLIC_OBJECT_USER_AGENT
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +54,42 @@ def test_modal_app_name_is_immutable_per_source() -> None:
     assert modal_app_name("rlab-eval-v2", "a" * 40) == "rlab-eval-v2-aaaaaaaaaaaa"
     with pytest.raises(ValueError, match="full lowercase Git SHA"):
         modal_app_name("rlab-eval-v2", "main")
+
+
+def test_modal_download_uses_explicit_rlab_user_agent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    observed: list[str] = []
+
+    class Response:
+        def __init__(self):
+            self.payload = b"checkpoint"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, _size: int = -1) -> bytes:
+            payload, self.payload = self.payload, b""
+            return payload
+
+    def urlopen(request, *, timeout):
+        assert timeout == 60
+        assert isinstance(request, urllib.request.Request)
+        observed.append(str(request.get_header("User-agent")))
+        return Response()
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    target = write_downloaded_file(
+        "https://models.example.test/model.zip",
+        tmp_path / "model.zip",
+    )
+
+    assert target.read_bytes() == b"checkpoint"
+    assert observed == [PUBLIC_OBJECT_USER_AGENT]
 
 
 def test_backend_uses_spawn_poll_and_cancel(monkeypatch: pytest.MonkeyPatch) -> None:

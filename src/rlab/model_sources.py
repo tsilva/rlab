@@ -26,6 +26,7 @@ from rlab.policy_bundle import (
     load_policy_bundle,
     load_policy_bundle_from_checkpoint,
 )
+from rlab.r2_store import public_object_request
 from rlab.run_contracts import RUN_ID_PATTERN
 
 
@@ -122,7 +123,10 @@ def model_source_ref(args: argparse.Namespace) -> str | None:
 
 
 def _public_json(url: str, *, max_bytes: int = 2 * 1024 * 1024) -> dict[str, Any]:
-    with urllib.request.urlopen(url, timeout=30) as response:  # noqa: S310
+    with urllib.request.urlopen(
+        public_object_request(url),
+        timeout=30,
+    ) as response:  # noqa: S310
         payload = response.read(max_bytes + 1)
     if len(payload) > max_bytes:
         raise ValueError(f"public JSON document is larger than {max_bytes} bytes")
@@ -145,7 +149,10 @@ def _download_public_file(
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f".{target.name}.partial")
     try:
-        with urllib.request.urlopen(url, timeout=60) as response:  # noqa: S310
+        with urllib.request.urlopen(
+            public_object_request(url),
+            timeout=60,
+        ) as response:  # noqa: S310
             with temporary.open("wb") as destination:
                 shutil.copyfileobj(response, destination, length=1024 * 1024)
         if expected_size is not None and temporary.stat().st_size != int(expected_size):
