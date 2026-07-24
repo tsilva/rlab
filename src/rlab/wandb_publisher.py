@@ -32,6 +32,8 @@ from rlab.wandb_utils import (
     resolve_wandb_namespace,
 )
 
+WANDB_FINISH_TIMEOUT_SECONDS = 300.0
+
 
 def _write_wandb_identity(run, run_dir: str) -> None:
     if run is None:
@@ -101,6 +103,10 @@ def _start_wandb(args, *, run_dir: str, config):
             mode=args.wandb_mode,
             id=str(args.wandb_run_id),
             resume="allow",
+            settings=wandb.Settings(
+                finish_timeout=WANDB_FINISH_TIMEOUT_SECONDS,
+                finish_timeout_raises=True,
+            ),
         )
     )
 
@@ -154,6 +160,8 @@ class WandbProjector:
                 tags=tags,
                 config=dict(train_config) if allow_create else None,
                 settings=wandb.Settings(
+                    finish_timeout=WANDB_FINISH_TIMEOUT_SECONDS,
+                    finish_timeout_raises=True,
                     x_update_finish_state=update_finish_state,
                 ),
             )

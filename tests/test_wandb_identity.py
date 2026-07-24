@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from rlab.env import EnvConfig
-from rlab.wandb_publisher import _start_wandb
+from rlab.wandb_publisher import WANDB_FINISH_TIMEOUT_SECONDS, _start_wandb
 from rlab.wandb_utils import (
     canonical_wandb_environment,
     game_family_for_environment,
@@ -122,7 +122,15 @@ def test_init_wandb_records_resolved_identity_and_submission_group() -> None:
     with (
         tempfile.TemporaryDirectory() as tmp,
         patch("rlab.wandb_publisher.load_wandb_env"),
-        patch.dict(sys.modules, {"wandb": SimpleNamespace(init=fake_init)}),
+        patch.dict(
+            sys.modules,
+            {
+                "wandb": SimpleNamespace(
+                    init=fake_init,
+                    Settings=lambda **kwargs: SimpleNamespace(**kwargs),
+                )
+            },
+        ),
     ):
         _start_wandb(args, run_dir=tmp, config=config)
 
@@ -135,3 +143,5 @@ def test_init_wandb_records_resolved_identity_and_submission_group() -> None:
     assert captured["config"]["environment"]["env_id"] == "ale-py:breakout"
     assert "environment_hash" in captured["config"]
     assert "game_family:Atari2600-Breakout" in captured["tags"]
+    assert captured["settings"].finish_timeout == WANDB_FINISH_TIMEOUT_SECONDS
+    assert captured["settings"].finish_timeout_raises is True
