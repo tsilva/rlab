@@ -37,7 +37,7 @@ PUBLIC_CHECKPOINT_MANIFEST = re.compile(
     r"/runs/(rlab-[0-9a-f]{32})/checkpoints/(\d+)-([0-9a-f]{64})/manifest\.json$"
 )
 DEFAULT_PUBLIC_MODELS_BASE_URL = (
-    "https://pub-b6b7805d4abd420bb376f95743fa6997.r2.dev"
+    "https://pub-fc35c0b186ce4aad8eea5e93d38c99db.r2.dev"
 )
 
 
