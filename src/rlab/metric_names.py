@@ -8,6 +8,33 @@ from typing import Any, Mapping
 
 METRICS_SCHEMA_VERSION = 6
 GLOBAL_STEP = "global_step"
+TRAIN_GLOBAL_STEP = "train/global_step"
+EVAL_CHECKPOINT_STEP = "eval/checkpoint_step"
+ORCHESTRATION_EVENT_SEQ = "orchestration/event_seq"
+ORCHESTRATION_EVENT_ID = "orchestration/event_id"
+ORCHESTRATION_QUEUE_DEPTH = "orchestration/outbox/queue_depth"
+ORCHESTRATION_OLDEST_UNPUBLISHED_SECONDS = (
+    "orchestration/outbox/oldest_unpublished_seconds"
+)
+ORCHESTRATION_INGRESS_RATE = "orchestration/outbox/ingress_rate"
+ORCHESTRATION_PUBLISH_RATE = "orchestration/outbox/publish_rate"
+ORCHESTRATION_PUBLICATION_CAPACITY_RATIO = (
+    "orchestration/outbox/publication_capacity_ratio"
+)
+ORCHESTRATION_LOCAL_HIGH_WATER = "orchestration/outbox/local_high_water"
+ORCHESTRATION_R2_HIGH_WATER = "orchestration/outbox/r2_high_water"
+ORCHESTRATION_WANDB_HIGH_WATER = "orchestration/outbox/wandb_high_water"
+ORCHESTRATION_WANDB_REMOTE_HIGH_WATER = (
+    "orchestration/outbox/wandb_remote_high_water"
+)
+ORCHESTRATION_WANDB_REMOTE_VISIBLE_LAG_SECONDS = (
+    "orchestration/outbox/wandb_remote_visible_lag_seconds"
+)
+ORCHESTRATION_CHECKPOINT_BACKLOG = "orchestration/checkpoint/backlog"
+ORCHESTRATION_PENDING_EVALS = "orchestration/eval/pending"
+ORCHESTRATION_RESULT_TO_STOP_SECONDS = "orchestration/eval/result_to_stop_seconds"
+ORCHESTRATION_IDLE_GPU_TAIL_SECONDS = "orchestration/drain/idle_gpu_tail_seconds"
+ORCHESTRATION_SCRATCH_USED_FRACTION = "orchestration/scratch/used_fraction"
 
 TRAIN_EPISODE_RETURN_SHAPED_MEAN = "train/episode/return/shaped/mean"
 TRAIN_EPISODE_RETURN_SHAPED_FROM_TARGET_MEAN = "train/episode/return/shaped/from/target/mean"
@@ -406,7 +433,7 @@ V5_METRIC_DEFINITIONS = (
     _definition(TRAIN_ARTIFACT_SAVE_SECONDS, "Local model save duration.", "seconds", "artifact"),
     _definition(
         TRAIN_ARTIFACT_UPLOAD_SECONDS,
-        "External storage and W&B artifact publication duration.",
+        "Public R2 checkpoint publication duration.",
         "seconds",
         "artifact",
     ),
@@ -568,6 +595,120 @@ V5_METRIC_DEFINITIONS = (
 
 
 V6_ONLY_METRIC_DEFINITIONS = (
+    _definition(
+        TRAIN_GLOBAL_STEP,
+        "Scientific training X-axis: policy environment transitions consumed.",
+        "steps",
+        "frame",
+    ),
+    _definition(
+        EVAL_CHECKPOINT_STEP,
+        "Scientific evaluation X-axis: step of the evaluated checkpoint.",
+        "steps",
+        "evaluation",
+    ),
+    _definition(
+        ORCHESTRATION_EVENT_SEQ,
+        "Monotonic local outbox event sequence used as W&B delivery order.",
+        "events",
+        "frame",
+    ),
+    _definition(
+        ORCHESTRATION_EVENT_ID,
+        "Stable content-derived identifier used to deduplicate at-least-once delivery.",
+        "metadata",
+        "frame",
+    ),
+    _definition(
+        ORCHESTRATION_QUEUE_DEPTH,
+        "Metric outbox frames not yet acknowledged by the W&B SDK.",
+        "events",
+        "supervisor sample",
+    ),
+    _definition(
+        ORCHESTRATION_OLDEST_UNPUBLISHED_SECONDS,
+        "Age of the oldest metric frame not yet acknowledged by the W&B SDK.",
+        "seconds",
+        "supervisor sample",
+    ),
+    _definition(
+        ORCHESTRATION_INGRESS_RATE,
+        "Observed local metric-frame creation rate over the latest supervisor interval.",
+        "events/second",
+        "supervisor sample",
+    ),
+    _definition(
+        ORCHESTRATION_PUBLISH_RATE,
+        "Observed W&B SDK acknowledgment rate over the latest supervisor interval.",
+        "events/second",
+        "supervisor sample",
+    ),
+    _definition(
+        ORCHESTRATION_PUBLICATION_CAPACITY_RATIO,
+        "Observed W&B publication rate divided by observed metric ingress rate.",
+        "ratio",
+        "supervisor sample",
+    ),
+    _definition(
+        ORCHESTRATION_LOCAL_HIGH_WATER,
+        "Largest metric-frame sequence durably present in local SQLite.",
+        "events",
+        "supervisor sample",
+    ),
+    _definition(
+        ORCHESTRATION_R2_HIGH_WATER,
+        "Largest metric-frame sequence sealed in immutable private R2 journals.",
+        "events",
+        "supervisor sample",
+    ),
+    _definition(
+        ORCHESTRATION_WANDB_HIGH_WATER,
+        "Largest metric-frame sequence acknowledged by the W&B SDK.",
+        "events",
+        "supervisor sample",
+    ),
+    _definition(
+        ORCHESTRATION_WANDB_REMOTE_HIGH_WATER,
+        "Largest orchestration event sequence observed through the W&B API.",
+        "events",
+        "remote visibility probe",
+    ),
+    _definition(
+        ORCHESTRATION_WANDB_REMOTE_VISIBLE_LAG_SECONDS,
+        "Age of the newest local metric event not yet observed through the W&B API.",
+        "seconds",
+        "remote visibility probe",
+    ),
+    _definition(
+        ORCHESTRATION_CHECKPOINT_BACKLOG,
+        "Ready local checkpoints not yet verified in public model R2.",
+        "checkpoints",
+        "supervisor sample",
+    ),
+    _definition(
+        ORCHESTRATION_PENDING_EVALS,
+        "Persisted evaluation intents without a terminal verified result.",
+        "evaluations",
+        "supervisor sample",
+    ),
+    _definition(
+        ORCHESTRATION_RESULT_TO_STOP_SECONDS,
+        "Time from observing an accepted eval result to signaling the learner.",
+        "seconds",
+        "accepted evaluation",
+    ),
+    _definition(
+        ORCHESTRATION_IDLE_GPU_TAIL_SECONDS,
+        "Time the training container retained its GPU after the learner exited.",
+        "seconds",
+        "terminal drain",
+    ),
+    _definition(
+        ORCHESTRATION_SCRATCH_USED_FRACTION,
+        "Fraction of the task scratch filesystem currently used.",
+        "fraction",
+        "supervisor sample",
+    ),
     _definition(
         TRAIN_EPISODE_RETURN_SHAPED_FROM_TARGET_MEAN,
         "Rolling mean shaped return over the latest 100 genuine target-origin training episodes.",

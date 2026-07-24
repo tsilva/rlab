@@ -1,0 +1,13 @@
+defaults:
+- ../../../../recipes/_presets/mario-single-ppo@_global_
+- _self_
+reward_shape: score-v1
+recipe_id: dstack-smoke
+description: >-
+  Seed {seed} runs the bounded dstack and durable-result integration smoke for
+  {goal_id}.
+train:
+  timesteps: 512
+  backend:
+    config:
+      batch_size: 128

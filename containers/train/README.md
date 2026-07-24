@@ -1,177 +1,95 @@
-# rlab Train Container
+# rlab training container
 
-This image is the shared runtime contract for train/eval workers. It contains
-the repo code, locked Python dependencies from `uv.lock`, system libraries
-needed by Stable Retro, the `rlab` CLI, and the container-only
-`rlab-container-entrypoint` and `rlab-container-smoke` executables. It intentionally does
-not contain ROMs, secrets, checkpoints, W&B data, or run outputs.
+This image is the complete v1 runtime for one dstack training task. It contains
+the learner and its in-container supervisor, but no ROMs, credentials,
+checkpoints, W&B data, or run outputs.
 
-The Dockerfile keeps the heavyweight stack in two cacheable images: a GPU
-foundation (`torch`, Triton, and CUDA/NVIDIA wheels), then the remaining train
-dependencies. The non-GPU packages are installed in a clean virtual environment
-at `/opt/rlab-dependencies`, while the GPU foundation remains at
-`/root/rlab/.venv`. A `.pth` bridge makes the GPU site-packages visible to the
-non-GPU interpreter, and `PATH` selects non-GPU console scripts before GPU console
-scripts. Because the two environments occupy disjoint paths, the non-GPU tree can
-be collapsed into a scratch overlay and attached to the immutable GPU foundation
-with one `COPY --link` without reading or extracting the foundation filesystem. No
-command executes after that merge. It assembles the small application filesystem in a separate scratch stage. Repository
-documentation, tests, goals, and recipes are not embedded in the runtime; goals and
-fully composed recipes travel in each queue payload. For
-published builds, the workflow selects the immutable dependency-image digest as
-the actual runtime base, then attaches the application filesystem with one
-`COPY --link`. No command executes after that overlay is attached, so BuildKit
-can rebase normal source changes without downloading or
-extracting the multi-gigabyte dependency layer. Local builds and pull requests
-with unpublished dependency inputs use the same Dockerfile's internal
-`dependencies` stage instead. The GPU foundation is the source of nearly all of
-the multi-gigabyte transfer; ordinary runtime and non-GPU dependency changes do
-not invalidate it.
+The learner writes structured events and checkpoint notifications to local
+SQLite. The supervisor is the only networked process: it owns the R2 writer
+lease, uploads immutable checkpoints, dispatches Modal evaluations, and is the
+sole W&B writer. A task is successful only after the terminal drain proves that
+all ready checkpoints have terminal evaluations and W&B reached its durable
+high-water mark.
 
-`uv.lock` remains the universal resolution and provenance source. The committed
-`train-linux-amd64.lock`, `gpu-linux-amd64.lock`, and
-`train-dependencies-linux-amd64.lock` files are deterministic CPython 3.14/Linux
-x86-64 install projections for the container only. The GPU and non-GPU projections
-must be disjoint and their union must exactly reconstruct the full train projection. Regenerate
-and verify them with:
+## Image contract
+
+The Dockerfile preserves three independently cacheable layers:
+
+1. CUDA, PyTorch, and Triton.
+2. The remaining frozen Python dependencies.
+3. The exact-source rlab application overlay.
+
+`uv.lock` is the dependency source of truth. The checked-in Linux lock
+projections must remain disjoint and reconstruct the complete training
+environment:
 
 ```bash
-uv run --frozen --only-group train-image-build \
-  python containers/train/lock_projection.py
 uv run --frozen --only-group train-image-build \
   python containers/train/lock_projection.py --check
 ```
 
-## Build Locally
+Build and smoke locally:
 
 ```bash
 docker buildx build \
   --platform linux/amd64 \
   -f containers/train/Dockerfile \
-  -t ghcr.io/tsilva/rlab/rlab-train:git-$(git rev-parse --short HEAD) \
+  -t rlab-train:local \
   --load \
   .
+
+docker run --rm rlab-train:local
 ```
 
-Smoke the image without ROMs:
+Published runs use only a verified immutable reference of the form
+`docker:ghcr.io/tsilva/rlab/rlab-train@sha256:<digest>`. The image workflow
+records the exact source SHA, runtime input hash, dependency digests, and final
+digest. dstack submission refuses a dirty or unpublished source revision.
+
+## Runtime mounts and secrets
+
+A Mario task mounts the content-addressed host ROM cache read-only at
+`/rom-cache`. The ROM bytes must match both the committed SHA-256 and the
+provider identity in the run manifest. Future ephemeral hosts may instead fetch
+the encrypted private asset during task setup, verify it, and remove it with
+task storage.
+
+The task receives scoped credentials at runtime:
+
+- control-private R2: read/write authority and recovery journals;
+- eval-private R2: intent/result reads plus per-run ROM staging;
+- models-public R2: immutable public checkpoint publication;
+- W&B: supervisor only;
+- Modal: supervisor only.
+
+The learner subprocess has these network credentials removed from its
+environment.
+
+## dstack operation
+
+Checked-in task and fleet templates live under `ops/dstack/`. v1 schedules one
+training task on one single-GPU host; it does not oversubscribe B3 with multiple
+learner containers.
 
 ```bash
-docker run --rm ghcr.io/tsilva/rlab/rlab-train:git-$(git rev-parse --short HEAD)
+rlab experiment launch \
+  --goal SuperMarioBros-Nes-v0/Level1-1 \
+  --recipe ppo.yaml \
+  --seed 123 \
+  --run-description "Mario Level1-1 dstack run" \
+  --compute local \
+  --target b3
+
+rlab experiment status --run <rlab-run-id> --json
+rlab experiment follow --run <rlab-run-id>
+rlab experiment logs --run <rlab-run-id>
+rlab experiment cancel --run <rlab-run-id>
 ```
 
-For a ROM-backed job, first ensure the one content-addressed cache entry with the exact runtime
-image. The normal Fleet launcher performs this helper step automatically:
+dstack owns placement, process logs, interruption reporting, cancellation, and
+resource release. R2 receipts—not task exit status—own scientific success,
+promotion, and resumable recovery.
 
-```bash
-docker run --rm \
-  --env-file /home/tsilva/rlab/.env.runner \
-  -v /home/tsilva/rlab/payloads:/input/payloads:ro \
-  -v /home/tsilva/rlab/rom-cache:/rom-cache \
-  ghcr.io/tsilva/rlab/rlab-train@sha256:<digest> \
-  python -m rlab.rom_cache \
-    --payload /input/payloads/<launch-id>.json \
-    --cache-root /rom-cache
-```
-
-Then mount only the required digest directory read-only when running the claimed job payload:
-
-```bash
-docker run --rm --gpus all \
-  --env-file /home/tsilva/rlab/.env.runner \
-  -e RLAB_ROM_CACHE_DIR=/rom-cache \
-  -v /home/tsilva/rlab/payloads:/input/payloads:ro \
-  -v /home/tsilva/rlab/outputs:/output \
-  -v /home/tsilva/rlab/rom-cache/sha256/<rom-sha256>:/rom-cache/sha256/<rom-sha256>:ro \
-  ghcr.io/tsilva/rlab/rlab-train@sha256:<digest> \
-  rlab-container-entrypoint \
-  rlab run-job \
-    --payload /input/payloads/<launch-id>.json \
-    --output-dir /output/<launch-id>
-```
-
-The entrypoint never imports or scans ROM directories. ROM-free jobs skip both the cache helper and
-the ROM mount.
-
-## Publishing
-
-The branch-triggered `.github/workflows/rlab-train-dependencies.yml` workflow
-uses one metadata job and one publisher job to prebuild changed foundations. The
-publisher resolves or builds the GPU and non-GPU images sequentially through one
-Buildx builder. The main train-image workflow is independently correct: one build
-job resolves or builds the GPU, dependency, and runtime images through one builder,
-then Modal deployment runs downstream. Both workflows reuse the immutable images
-and publish:
-
-```text
-ghcr.io/tsilva/rlab/rlab-train-gpu:build-<gpu-key>
-ghcr.io/tsilva/rlab/rlab-train-dependencies:build-<dependency-key>
-ghcr.io/tsilva/rlab/rlab-train:runtime-<runtime-input-sha256>
-ghcr.io/tsilva/rlab/rlab-train@sha256:<digest>
-```
-
-The identity chain is GPU key → GPU digest → dependency key → dependency digest →
-overlay key → runtime key. The overlay key hashes normalized indexed paths,
-executable modes, selected runtime Dockerfile instructions, and file contents, but
-not `uv.lock` or dependency projections. An exact-source version-5 receipt records
-every key, plan hash, base digest, original runtime build commit, and immutable image
-digest. Equivalent source commits reuse the existing tag and
-digest; runs still record their exact source commit and composed recipe. Feed the
-receipt's full `docker:...@sha256:...` ref into queue creation with
-`--runtime-image-ref-file` so jobs do not depend on tags.
-
-GPU and dependency images carry SBOM and provenance. There is no mutable maximal
-registry build cache: published content-addressed images are the reusable cache
-contract. Dependency images use the immutable GPU digest as their base and add only
-the linked non-GPU virtual-environment overlay. The dependency SBOM scanner is
-explicitly scoped to that scratch overlay; the GPU foundation retains its own SBOM,
-and the final metadata-only composition is not rescanned. Runtime images use the
-immutable dependency digest as their base and add only linked application layers.
-
-Validate the two physical virtual environments as one exact logical lock after a
-merged image is available:
-
-```bash
-docker run --rm \
-  -v "$PWD:/contract:ro" \
-  --entrypoint /opt/rlab-dependencies/bin/python \
-  <merged-image> \
-  /contract/containers/train/environment_contract.py \
-  --train-lock /contract/containers/train/train-linux-amd64.lock \
-  --gpu-lock /contract/containers/train/gpu-linux-amd64.lock \
-  --dependency-lock /contract/containers/train/train-dependencies-linux-amd64.lock
-```
-
-This rejects missing, unexpected, duplicated, or wrong-version distributions,
-checks active `Requires-Dist` constraints across both environments, and verifies
-the `.pth`, interpreter, `PATH`, and console-script contracts. A single-venv
-`uv pip check` cannot model this deliberately split environment.
-
-## Fleet Integration
-
-Mac-side `rlab fleet` reconciles these one-job containers over local Docker or
-SSH while the queue remains the scheduling authority. See
-[INSTANCES.md](../../INSTANCES.md) for
-the canonical service, job-status, host-setup, capacity, and cleanup commands:
-
-```bash
-rlab fleet service status --json
-rlab experiment status --machine beast-3 --json
-rlab fleet capacity --machine beast-3 --set 4
-rlab fleet drain --machine beast-3
-rlab fleet resume --machine beast-3
-```
-
-Each launched container owns exactly one worker attempt and is labeled with
-`rlab.job-container=true`, `rlab.job-id`, `rlab.launch-id`, `rlab.machine`, and
-`rlab.runtime-image-ref`. The Mac fleet service finalizes completed launches from
-`result.json` and prunes stale host runtime images that are not demanded by the
-queue or used by active containers.
-If latest-runtime prewarming fails, container cleanup continues but runtime-image
-pruning is skipped so the host's last known good image remains available.
-
-For a run materialized with `checkpoint_eval_backend: modal`, the container runs a low-priority
-checkpoint coordinator plus a Neon telemetry relay. The trainer atomically saves into the launch
-output's mounted `runs/` tree; the coordinator hashes and uploads checkpoints to R2 and announces
-their verified locations through Neon. At shutdown, producers stop first and the relay immediately
-flushes every remaining SQLite frame plus a final watermark. The attempt succeeds only after Neon
-acknowledges that watermark. Fleet schedules bounded Modal CPU calls and is the only W&B writer.
+Host image cleanup is a separate root-owned timer. It queries dstack for
+active/queued immutable digests and removes only unused rlab-managed images,
+preserving active containers and demanded digests.

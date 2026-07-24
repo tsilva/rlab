@@ -1,20 +1,9 @@
 schema_version: 1
 name: local-smoke-mario-l11
 kind: local_smoke
-description: Tiny queue-backed local training and durable-result smoke on Mario Level1-1.
+description: Tiny dstack local training and durable-result smoke on Mario Level1-1.
 goal_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml
-recipe_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/ppo.yaml
-machine: local-macbook
+recipe_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/dstack-smoke.yaml
+target: b3
 seed: 123
-recipe_overrides:
-- recipe_id=benchmark-local-smoke
-- campaign_id=benchmark-local-smoke
-- description=Benchmark queue-backed localhost smoke run for Mario Level1-1.
-- train.timesteps=512
-- train.environment.env_config.n_envs=1
-- train.backend.config.batch_size=128
-- train.environment.task.termination.max_episode_steps=600
-- train.checkpoint_freq=256
-- logging.wandb=false
-- logging.wandb_mode=disabled
-- logging.wandb_artifact_storage_uri=''
+max_duration: 30m

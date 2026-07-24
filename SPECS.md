@@ -21,7 +21,8 @@ rlab is a reproducible reinforcement-learning workbench for game-agent researche
 
 ### Provenance and Security
 
-- Every run, cohort, campaign, result, and artifact must have a stable identity and enough provenance to reconstruct its goal, configuration, overrides, seed, source, runtime, environment, execution target, and launch context. Supported historical references must remain readable.
+- Every run, cohort, campaign, result, and artifact must have a stable identity and enough provenance to reconstruct its goal, configuration, overrides, seed, source, runtime, environment, execution target, and launch context.
+- References produced by the active workflow must remain readable; no compatibility is required for purged legacy W&B or R2 data or retired PostgreSQL and Fleet state and identifiers.
 - Generated outputs and secrets must remain outside tracked source, and normal operation must not expose credentials.
 - Externally supplied executable models must not run until their complete content is integrity-checked and the user has trusted their source or approved that invocation after an explicit authority-and-credential warning.
 - Installation must be reproducible, supply-chain hardened, resistant to known-bad releases, and compatible with supported workflows.
@@ -35,6 +36,9 @@ rlab is a reproducible reinforcement-learning workbench for game-agent researche
 ### Training Results and Publication
 
 - Training must durably preserve authoritative, unambiguous metrics and checkpoints by default, keep scientific evidence separate from job state and diagnostics, and prevent observability systems from throttling training or determining scientific outcomes.
+- Training and evaluation metrics for one logical run must be available together, with one writer responsible for the metrics run so evaluation cannot race training.
+- Heavy checkpoints, evaluation evidence, replays, and recovery data must live in object storage rather than the metrics service.
+- Evaluation must run independently on separately scheduled compute, and a goal-valid acceptance result must stop training at the next safe learner boundary.
 - For queued runs with publication enabled, every ready periodic and final checkpoint must be published independently of evaluation and remain downloadable and playable without private infrastructure credentials.
 - Published policies must include the policy artifact, portable provenance and reproducibility metadata, verified evaluation evidence, and a representative browser-safe replay for visual behavior.
 
@@ -47,4 +51,7 @@ rlab is a reproducible reinforcement-learning workbench for game-agent researche
 ### Queued Operation and Benchmarks
 
 - Queued execution must be explicit, fail closed, isolated, and reproducible. Attempts must preserve exact provenance and durable results across interruption and retries, report only evidence-backed states, and clean unused resources without affecting active work.
+- Each v1 training run must execute in one container while compute placement supports local machines and cost-bounded cloud capacity without provider-specific research code.
+- The orchestration stack must minimize independently operated services and must not require a project-owned relational database.
+- The clean-slate orchestration refactor is accepted only after a B3 Mario Level1-1 run reports its training and evaluation metrics, durably publishes every checkpoint, completes the goal-owned 100-episode acceptance evaluation, and early-stops because all 100 episodes succeed.
 - Benchmark claims must be reproducible and compare equivalent environments, semantics, workloads, concurrency, and host-load conditions.

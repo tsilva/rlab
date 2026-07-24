@@ -1,7 +1,7 @@
 # Benchmark Profiles
 
 Benchmark profiles are named, repeatable performance measurements plus one
-queue-backed local integration smoke. They are not training recipes and they are
+dstack-backed local integration smoke. They are not training recipes and they are
 not promotion evidence. Use them to catch environment/runtime overhead,
 training-loop throughput, and local queue regressions before a larger experiment
 batch burns time.
@@ -32,7 +32,7 @@ generated result and isolated run evidence under `logs/benchmarks/`.
 
 ## Profile Types
 
-- `local_smoke`: queue-backed localhost smoke using `local-macbook`, disabled
+- `local_smoke`: dstack local smoke using `b3`, disabled
   checkpoint evaluation, and the same one-attempt container/result contract as
   Beast jobs.
 - `env_throughput`: paired native-provider and rlab runtime throughput benchmark

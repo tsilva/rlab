@@ -1,7 +1,7 @@
 # Experiments
 
-This directory holds shared machine config, active goal contracts, training
-recipes, benchmark profiles, report declarations, and experiment utilities.
+This directory holds active goal contracts, training recipes, benchmark
+profiles, report declarations, and experiment utilities.
 Keep broad repo rules in the top-level runbooks:
 
 - `../AGENTS.md` for repo rules and stable-retro runtime cautions.
@@ -13,7 +13,7 @@ live beside those contracts as `_reports.yaml`. Active training recipes live und
 `recipes/`, while benchmark profiles live under `benchmarks/`. Generated local run
 logs and outputs belong under ignored paths such as `runs/`, `logs/`, and `models/`.
 
-Current machine-readable research state:
+Current research state:
 
 - `goals/`: active goal contracts, optional environment fragments, and report declarations.
 - `recipes/`: active checked-in training recipes and presets.

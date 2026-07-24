@@ -26,6 +26,8 @@ class TrainImageTests(unittest.TestCase):
         self.assertEqual(len(key), 64)
         self.assertNotEqual(key, runtime_key(repo_root=root, dependency_digest=DIGEST_B))
         self.assertIn("THIRD_PARTY_NOTICES.md", RUNTIME_INPUT_PATHS)
+        self.assertIn("experiments/goals", RUNTIME_INPUT_PATHS)
+        self.assertIn("experiments/recipes", RUNTIME_INPUT_PATHS)
         self.assertIn("src", RUNTIME_INPUT_PATHS)
         self.assertIn("pyproject.toml", RUNTIME_INPUT_PATHS)
         self.assertNotIn("uv.lock", RUNTIME_INPUT_PATHS)

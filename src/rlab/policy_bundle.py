@@ -17,7 +17,6 @@ from rlab.file_utils import file_sha256 as sha256_file
 RECIPE_DOCUMENT_TYPE = "rlab.recipe"
 RECIPE_FORMAT_VERSION = 1
 MODEL_DOCUMENT_TYPE = "rlab.model"
-LEGACY_MODEL_FORMAT_VERSION = 1
 MODEL_FORMAT_VERSION = 2
 
 RECIPE_FILENAME = "recipe.json"
@@ -79,7 +78,7 @@ _EVAL_FIELDS = frozenset(
 )
 _PLAYBACK_FIELDS = frozenset({"environment", "seed", "asset"})
 _RECIPE_PROVENANCE_FIELDS = frozenset({"source_commit", "source_files", "runtime", "asset"})
-_MODEL_PROVENANCE_FIELDS_V1 = frozenset(
+_MODEL_PROVENANCE_FIELDS = frozenset(
     {
         "metadata_version",
         "kind",
@@ -88,10 +87,8 @@ _MODEL_PROVENANCE_FIELDS_V1 = frozenset(
         "wandb_run_id",
         "wandb_project",
         "wandb_run_path",
-        "batch_id",
         "campaign_id",
         "game_family",
-        "retry_of_job_id",
         "goal_slug",
         "goal_sha256",
         "goal_contract_sha256",
@@ -103,17 +100,14 @@ _MODEL_PROVENANCE_FIELDS_V1 = frozenset(
         "reward_shape_is_default",
         "recipe_slug",
         "recipe_sha256",
-        "queue_train_job_id",
         "runtime_image_ref",
         "seed",
         "repo_git_commit",
         "training_metadata",
         "training_metadata_hash",
-    }
-)
-_MODEL_PROVENANCE_FIELDS_V2 = frozenset(
-    {
-        *_MODEL_PROVENANCE_FIELDS_V1,
+        "attempt_id",
+        "compute_target",
+        "dstack_task",
         "snapshot_curriculum_preflight_sha256",
         "snapshot_curriculum_session",
     }
@@ -129,16 +123,15 @@ _SECRET_FRAGMENTS = (
 )
 _OPERATIONAL_TRAIN_FIELDS = frozenset(
     {
-        "batch_id",
+        "attempt_id",
         "campaign_id",
+        "compute_target",
+        "dstack_task",
         "game_family",
         "goal_path",
-        "machine",
-        "queue_train_job_id",
         "recipe_composition",
         "recipe_json_path",
         "recipe_path",
-        "retry_of_job_id",
         "run_description",
         "run_name",
         "runs_dir",
@@ -146,17 +139,14 @@ _OPERATIONAL_TRAIN_FIELDS = frozenset(
         "runtime_image_ref",
         "runtime_input_sha256",
         "source_sha",
-        "telemetry_transport",
         "train_config_json",
         "wandb",
-        "wandb_artifact_storage_uri",
         "wandb_entity",
         "wandb_group",
         "wandb_mode",
         "wandb_project",
         "wandb_run_id",
         "wandb_tags",
-        "no_wandb_artifacts",
     }
 )
 _RUNTIME_PACKAGES = (
@@ -634,24 +624,15 @@ def _validate_model(
     return deepcopy(dict(document))
 
 
-def _validate_model_v1(document: Mapping[str, Any], source: str) -> dict[str, Any]:
-    return _validate_model(
-        document,
-        source,
-        provenance_fields=_MODEL_PROVENANCE_FIELDS_V1,
-    )
-
-
 def _validate_model_v2(document: Mapping[str, Any], source: str) -> dict[str, Any]:
     return _validate_model(
         document,
         source,
-        provenance_fields=_MODEL_PROVENANCE_FIELDS_V2,
+        provenance_fields=_MODEL_PROVENANCE_FIELDS,
     )
 
 
 _MODEL_HANDLERS = {
-    LEGACY_MODEL_FORMAT_VERSION: _validate_model_v1,
     MODEL_FORMAT_VERSION: _validate_model_v2,
 }
 
@@ -716,7 +697,7 @@ def build_recipe_document(
     composition = recipe.pop("_composition", {})
     train_config = dict(_required_mapping(recipe.get("train_config"), label="train_config"))
     # recipe.json is the immutable policy contract consumed by evaluation. Materialize
-    # backend defaults here, before the queue adds operational fields, so its backend
+    # backend defaults here, before the supervisor adds operational fields, so its backend
     # hash is identical to the normalized config executed by the learner.
     from rlab.train_config import env_config_allowed_keys, validate_and_normalize_train_config
 
@@ -775,7 +756,6 @@ def build_recipe_document(
     stop_on_acceptance = bool(train_config.get("stop_on_acceptance"))
     for key in _OPERATIONAL_TRAIN_FIELDS:
         train_config.pop(key, None)
-    train_config.pop("checkpoint_eval_asset_manifest", None)
     train_config.pop("rom_asset_manifest", None)
     if seed is not None:
         train_config["seed"] = int(seed)
@@ -855,7 +835,7 @@ def build_model_document(
     provenance = {
         key: deepcopy(value)
         for key, value in metadata.items()
-        if key in _MODEL_PROVENANCE_FIELDS_V2 and value not in (None, "")
+        if key in _MODEL_PROVENANCE_FIELDS and value not in (None, "")
     }
     if not provenance.get("reward_shape"):
         provenance.pop("reward_shape_is_default", None)

@@ -64,16 +64,25 @@ class TrainTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "reserved for training"):
             validate_eval_seed(9999)
 
-    def test_graceful_stop_callback_stops_after_flag_request(self) -> None:
+    def test_graceful_stop_callback_finishes_the_current_rollout(self) -> None:
+        class Model:
+            _total_timesteps = 1_000
+
         stop_flag = GracefulStopFlag()
         callback = GracefulStopHelper(stop_flag)
+        callback.model = Model()
         callback.num_timesteps = 123
 
         self.assertTrue(callback._on_step())
 
         stop_flag.request("SIGUSR1")
 
-        self.assertFalse(callback._on_step())
+        self.assertTrue(callback._on_step())
+        self.assertEqual(callback.model._total_timesteps, 1_000)
+
+        callback._on_rollout_end()
+
+        self.assertEqual(callback.model._total_timesteps, 123)
 
 
 if __name__ == "__main__":

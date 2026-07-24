@@ -58,7 +58,6 @@ def modal_readiness_payload(*, source_sha: str = SOURCE_SHA) -> dict:
             "schema_version": 1,
             "app_name": app_name,
             "runtime_image_ref": RUNTIME_IMAGE_REF,
-            "source_sha": BUILD_SOURCE_SHA,
             "runtime_build_source_sha": BUILD_SOURCE_SHA,
             "runtime_input_sha256": "d" * 64,
             "train_config_contract_sha256": contract_sha,
@@ -75,23 +74,22 @@ class RuntimeContractTests(unittest.TestCase):
         ):
             receipt = runtime_contract(runtime_image_ref=RUNTIME_IMAGE_REF)
 
-        self.assertEqual(receipt["source_sha"], "abc123")
         self.assertEqual(receipt["runtime_build_source_sha"], "abc123")
         self.assertEqual(receipt["runtime_input_sha256"], "d" * 64)
         self.assertEqual(receipt["runtime_image_ref"], RUNTIME_IMAGE_REF)
         self.assertEqual(len(receipt["train_config_contract_sha256"]), 64)
 
-    def test_runtime_payload_validation_accepts_queue_execution_fields(self) -> None:
+    def test_runtime_payload_validation_accepts_dstack_execution_fields(self) -> None:
         receipt = validate_config_payload(
             {
-                "batch_id": "bx0123456789abcdef",
-                "machine": "beast-3",
-                "queue_train_job_id": 1,
-                "run_name": "bx0123456789abcdef-base-s123-20000101T000000Z",
+                "attempt_id": "attempt-0123456789abcdef",
+                "compute_target": "b3",
+                "dstack_task": "rlab-0123456789abcdef0123456789abcdef",
+                "run_name": "rlab-0123456789abcdef0123456789abcdef",
                 "runtime_image_ref": RUNTIME_IMAGE_REF,
                 "seed": 123,
                 "training_backend": {"id": "sb3.ppo", "config": {}},
-                "wandb_group": "bx0123456789abcdef",
+                "wandb_group": "rlab-0123456789abcdef0123456789abcdef",
                 "wandb_run_id": "rlab-test",
             }
         )
@@ -99,8 +97,8 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertTrue(receipt["validated"])
         self.assertEqual(receipt["validated_field_count"], 9)
 
-    def test_image_receipt_rejects_legacy_and_digest_mismatch(self) -> None:
-        with self.assertRaisesRegex(ValueError, "schema_version must be 3 or 4 or 5"):
+    def test_image_receipt_rejects_retired_schema_and_digest_mismatch(self) -> None:
+        with self.assertRaisesRegex(ValueError, "schema_version must be 5"):
             runtime_refs.runtime_release_from_payload(
                 {"runtime_image_ref": RUNTIME_IMAGE_REF, "source_sha": SOURCE_SHA},
                 label="release",
@@ -146,63 +144,6 @@ class RuntimeContractTests(unittest.TestCase):
                 expected_runtime_input_sha256="d" * 64,
                 expected_runtime_build_source_sha=BUILD_SOURCE_SHA,
             )
-
-    def test_version_three_receipt_remains_readable(self) -> None:
-        payload = release_payload()
-        payload["schema_version"] = 3
-        payload.pop("runtime_input_sha256")
-        payload.pop("runtime_build_source_sha")
-
-        release = runtime_refs.runtime_release_from_payload(
-            payload,
-            label="legacy release",
-            expected_source_sha=SOURCE_SHA,
-        )
-
-        self.assertEqual(release.schema_version, 3)
-        self.assertEqual(release.runtime_input_sha256, "")
-        self.assertEqual(release.runtime_build_source_sha, SOURCE_SHA)
-
-    def test_version_four_receipt_remains_readable(self) -> None:
-        payload = release_payload()
-        payload["schema_version"] = 4
-        for field in (
-            "overlay_key",
-            "dependency_key",
-            "gpu_key",
-            "train_plan_sha256",
-            "gpu_plan_sha256",
-        ):
-            payload.pop(field)
-        payload["base_images"].pop("gpu")
-
-        release = runtime_refs.runtime_release_from_payload(
-            payload,
-            label="version four release",
-            expected_source_sha=SOURCE_SHA,
-        )
-
-        self.assertEqual(release.schema_version, 4)
-        self.assertEqual(release.gpu_key, "")
-
-    def test_version_one_modal_readiness_remains_readable_for_version_three_image(self) -> None:
-        payload = modal_readiness_payload()
-        payload["schema_version"] = 1
-        payload.pop("runtime_input_sha256")
-        payload.pop("runtime_build_source_sha")
-        payload["startup_probe"].pop("runtime_input_sha256")
-        payload["startup_probe"].pop("runtime_build_source_sha")
-        payload["startup_probe"]["source_sha"] = SOURCE_SHA
-
-        readiness = runtime_refs.modal_readiness_from_payload(
-            payload,
-            label="legacy Modal readiness",
-            expected_source_sha=SOURCE_SHA,
-            expected_runtime_image_ref=RUNTIME_IMAGE_REF,
-        )
-
-        self.assertEqual(readiness.schema_version, 1)
-        self.assertEqual(readiness.runtime_build_source_sha, SOURCE_SHA)
 
     def test_version_five_receipt_rejects_invalid_runtime_identity_fields(self) -> None:
         cases = {

@@ -16,15 +16,14 @@ from yaml.constructor import ConstructorError
 
 YAML_EXTENSIONS = {".yaml", ".yml"}
 TEMPLATE_VARS_KEY = "template_vars"
-QUEUE_TEMPLATE_VALUES: dict[str, Any] = {
-    "batch_id": "bx0123456789abcdef",
+RECIPE_TEMPLATE_VALUES: dict[str, Any] = {
     "campaign_id": "b-test",
     "seed": 123,
     "recipe_id": "candidate",
     "timestamp": "20260626T120000Z",
     "utc": "20260626T120000Z",
 }
-QUEUE_TEMPLATE_FIELDS = frozenset(QUEUE_TEMPLATE_VALUES)
+RECIPE_TEMPLATE_FIELDS = frozenset(RECIPE_TEMPLATE_VALUES)
 
 _LEVEL_ID_RE = re.compile(r"^Level(?P<world>\d+)-(?P<level>\d+)$", re.IGNORECASE)
 

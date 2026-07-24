@@ -1,0 +1,30 @@
+[Unit]
+Description=rlab pinned dstack control plane
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=5
+ExecStartPre=-/usr/bin/docker rm -f rlab-dstack-server
+ExecStartPre=/usr/bin/docker pull dstackai/dstack@sha256:86b820cf5f6e0cfc54dd387527493168a4045b362ca9459265ea9828eef0b4af
+ExecStart=/usr/bin/docker run --rm --name rlab-dstack-server \
+  --env-file /etc/rlab/dstack/server.env \
+  --env DSTACK_SERVER_DIR=/root/.dstack/server \
+  --env DSTACK_SERVER_HOST=0.0.0.0 \
+  --env DSTACK_SERVER_PORT=3000 \
+  --env DSTACK_SERVER_URL=http://127.0.0.1:3000 \
+  --env DSTACK_SERVER_ENVIRONMENT=production \
+  --env DSTACK_SERVER_LOG_LEVEL=WARNING \
+  --publish 127.0.0.1:3000:3000 \
+  --add-host host.docker.internal:host-gateway \
+  --volume /var/lib/rlab/dstack:/root/.dstack/server \
+  --security-opt no-new-privileges:true \
+  dstackai/dstack@sha256:86b820cf5f6e0cfc54dd387527493168a4045b362ca9459265ea9828eef0b4af
+ExecStop=/usr/bin/docker stop --timeout 30 rlab-dstack-server
+TimeoutStopSec=40
+
+[Install]
+WantedBy=multi-user.target

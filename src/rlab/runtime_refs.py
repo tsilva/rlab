@@ -28,9 +28,6 @@ DEFAULT_MODAL_WORKFLOW = "rlab Modal eval deployment"
 DEFAULT_MODAL_ARTIFACT = "rlab-modal-eval-readiness"
 DEFAULT_MODAL_ARTIFACT_FILE = "rlab-modal-eval-readiness.json"
 MODAL_READINESS_SCHEMA_VERSION = 2
-LEGACY_RUNTIME_DESCRIPTOR_SCHEMA_VERSION = 3
-DEPENDENCY_RUNTIME_DESCRIPTOR_SCHEMA_VERSION = 4
-LEGACY_MODAL_READINESS_SCHEMA_VERSION = 1
 DEFAULT_RUNTIME_READINESS_TIMEOUT_SECONDS = 20 * 60
 
 DIGEST_IMAGE_REF_RE = re.compile(r"^docker:[^\s@]+@sha256:(?P<digest>[0-9a-fA-F]{64})$")
@@ -120,16 +117,9 @@ def runtime_release_from_payload(
     expected_source_sha: str,
 ) -> RuntimeImageInfo:
     schema_version = int(payload.get("schema_version") or 0)
-    if schema_version not in {
-        LEGACY_RUNTIME_DESCRIPTOR_SCHEMA_VERSION,
-        DEPENDENCY_RUNTIME_DESCRIPTOR_SCHEMA_VERSION,
-        RUNTIME_DESCRIPTOR_SCHEMA_VERSION,
-    }:
+    if schema_version != RUNTIME_DESCRIPTOR_SCHEMA_VERSION:
         raise ValueError(
-            f"{label} schema_version must be "
-            f"{LEGACY_RUNTIME_DESCRIPTOR_SCHEMA_VERSION} or "
-            f"{DEPENDENCY_RUNTIME_DESCRIPTOR_SCHEMA_VERSION} or "
-            f"{RUNTIME_DESCRIPTOR_SCHEMA_VERSION}"
+            f"{label} schema_version must be {RUNTIME_DESCRIPTOR_SCHEMA_VERSION}"
         )
     runtime_image_ref = runtime_image_ref_from_payload(payload, label=label)
     source_sha = str(payload.get("source_sha") or "").strip()
@@ -142,59 +132,53 @@ def runtime_release_from_payload(
     if digest and digest.lower() != runtime_image_digest(runtime_image_ref):
         raise ValueError(f"{label} digest does not match runtime_image_ref")
     runtime_input_sha256 = str(payload.get("runtime_input_sha256") or "").strip().lower()
-    runtime_build_source_sha = str(payload.get("runtime_build_source_sha") or source_sha).strip()
-    if schema_version in {
-        DEPENDENCY_RUNTIME_DESCRIPTOR_SCHEMA_VERSION,
-        RUNTIME_DESCRIPTOR_SCHEMA_VERSION,
-    }:
-        if not re.fullmatch(r"[0-9a-f]{64}", runtime_input_sha256):
-            raise ValueError(f"{label} must include a valid runtime_input_sha256")
-        if not re.fullmatch(r"[0-9a-fA-F]{40,64}", runtime_build_source_sha):
-            raise ValueError(f"{label} must include a valid runtime_build_source_sha")
-        tags = payload.get("tags")
-        expected_tag = f"runtime-{runtime_input_sha256}"
-        if not isinstance(tags, Sequence) or isinstance(tags, str) or expected_tag not in tags:
-            raise ValueError(f"{label} must include its content-addressed runtime tag")
-        uv_lock_sha256 = str(payload.get("uv_lock_sha256") or "").strip().lower()
-        if not re.fullmatch(r"[0-9a-f]{64}", uv_lock_sha256):
-            raise ValueError(f"{label} must include a valid uv_lock_sha256")
-        base_images = payload.get("base_images")
-        dependency_image = (
-            str(base_images.get("dependencies") or "").strip()
-            if isinstance(base_images, Mapping)
-            else ""
-        )
-        try:
-            normalize_runtime_image_ref(dependency_image)
-        except ValueError as exc:
-            raise ValueError(
-                f"{label} must include an immutable dependency image identity"
-            ) from exc
-        if not str(payload.get("workflow_run_id") or "").strip():
-            raise ValueError(f"{label} must include workflow_run_id")
+    runtime_build_source_sha = str(payload.get("runtime_build_source_sha") or "").strip()
+    if not re.fullmatch(r"[0-9a-f]{64}", runtime_input_sha256):
+        raise ValueError(f"{label} must include a valid runtime_input_sha256")
+    if not re.fullmatch(r"[0-9a-fA-F]{40,64}", runtime_build_source_sha):
+        raise ValueError(f"{label} must include a valid runtime_build_source_sha")
+    tags = payload.get("tags")
+    expected_tag = f"runtime-{runtime_input_sha256}"
+    if not isinstance(tags, Sequence) or isinstance(tags, str) or expected_tag not in tags:
+        raise ValueError(f"{label} must include its content-addressed runtime tag")
+    uv_lock_sha256 = str(payload.get("uv_lock_sha256") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", uv_lock_sha256):
+        raise ValueError(f"{label} must include a valid uv_lock_sha256")
+    base_images = payload.get("base_images")
+    dependency_image = (
+        str(base_images.get("dependencies") or "").strip()
+        if isinstance(base_images, Mapping)
+        else ""
+    )
+    try:
+        normalize_runtime_image_ref(dependency_image)
+    except ValueError as exc:
+        raise ValueError(
+            f"{label} must include an immutable dependency image identity"
+        ) from exc
+    if not str(payload.get("workflow_run_id") or "").strip():
+        raise ValueError(f"{label} must include workflow_run_id")
     image_keys: dict[str, str] = {}
-    if schema_version == RUNTIME_DESCRIPTOR_SCHEMA_VERSION:
-        for field in (
-            "overlay_key",
-            "dependency_key",
-            "gpu_key",
-            "train_plan_sha256",
-            "gpu_plan_sha256",
-        ):
-            value = str(payload.get(field) or "").strip().lower()
-            if not re.fullmatch(r"[0-9a-f]{64}", value):
-                raise ValueError(f"{label} must include a valid {field}")
-            image_keys[field] = value
-        base_images = payload.get("base_images")
-        gpu_image = (
-            str(base_images.get("gpu") or "").strip()
-            if isinstance(base_images, Mapping)
-            else ""
-        )
-        try:
-            normalize_runtime_image_ref(gpu_image)
-        except ValueError as exc:
-            raise ValueError(f"{label} must include an immutable GPU image identity") from exc
+    for field in (
+        "overlay_key",
+        "dependency_key",
+        "gpu_key",
+        "train_plan_sha256",
+        "gpu_plan_sha256",
+    ):
+        value = str(payload.get(field) or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise ValueError(f"{label} must include a valid {field}")
+        image_keys[field] = value
+    gpu_image = (
+        str(base_images.get("gpu") or "").strip()
+        if isinstance(base_images, Mapping)
+        else ""
+    )
+    try:
+        normalize_runtime_image_ref(gpu_image)
+    except ValueError as exc:
+        raise ValueError(f"{label} must include an immutable GPU image identity") from exc
     return RuntimeImageInfo(
         runtime_image_ref=runtime_image_ref,
         source_sha=source_sha,
@@ -228,14 +212,9 @@ def modal_readiness_from_payload(
     expected_runtime_build_source_sha: str = "",
 ) -> ModalReadinessInfo:
     schema_version = int(payload.get("schema_version") or 0)
-    if schema_version not in {
-        LEGACY_MODAL_READINESS_SCHEMA_VERSION,
-        MODAL_READINESS_SCHEMA_VERSION,
-    }:
+    if schema_version != MODAL_READINESS_SCHEMA_VERSION:
         raise ValueError(
-            f"{label} schema_version must be "
-            f"{LEGACY_MODAL_READINESS_SCHEMA_VERSION} or "
-            f"{MODAL_READINESS_SCHEMA_VERSION}"
+            f"{label} schema_version must be {MODAL_READINESS_SCHEMA_VERSION}"
         )
     source_sha = str(payload.get("source_sha") or "").strip()
     if source_sha != expected_source_sha:
@@ -252,35 +231,30 @@ def modal_readiness_from_payload(
     if not modal_app_name or not isinstance(startup_probe, Mapping):
         raise ValueError(f"{label} must include Modal app and startup-probe evidence")
     runtime_input_sha256 = str(payload.get("runtime_input_sha256") or "").strip().lower()
-    runtime_build_source_sha = str(payload.get("runtime_build_source_sha") or source_sha).strip()
-    if schema_version == MODAL_READINESS_SCHEMA_VERSION:
-        expected_runtime_input_sha256 = str(expected_runtime_input_sha256).strip().lower()
-        expected_runtime_build_source_sha = str(expected_runtime_build_source_sha).strip()
-        if (
-            not expected_runtime_input_sha256
-            or runtime_input_sha256 != expected_runtime_input_sha256
-        ):
-            raise ValueError(f"{label} runtime_input_sha256 does not match image receipt")
-        if (
-            not expected_runtime_build_source_sha
-            or runtime_build_source_sha != expected_runtime_build_source_sha
-        ):
-            raise ValueError(f"{label} runtime_build_source_sha does not match image receipt")
+    runtime_build_source_sha = str(payload.get("runtime_build_source_sha") or "").strip()
+    expected_runtime_input_sha256 = str(expected_runtime_input_sha256).strip().lower()
+    expected_runtime_build_source_sha = str(expected_runtime_build_source_sha).strip()
+    if (
+        not expected_runtime_input_sha256
+        or runtime_input_sha256 != expected_runtime_input_sha256
+    ):
+        raise ValueError(f"{label} runtime_input_sha256 does not match image receipt")
+    if (
+        not expected_runtime_build_source_sha
+        or runtime_build_source_sha != expected_runtime_build_source_sha
+    ):
+        raise ValueError(f"{label} runtime_build_source_sha does not match image receipt")
     expected_probe = {
         "runtime_image_ref": runtime_image_ref,
         "train_config_contract_sha256": train_config_contract_sha256(),
         "app_name": modal_app_name,
     }
-    if schema_version == LEGACY_MODAL_READINESS_SCHEMA_VERSION:
-        expected_probe["source_sha"] = source_sha
-    else:
-        expected_probe.update(
-            {
-                "source_sha": runtime_build_source_sha,
-                "runtime_build_source_sha": runtime_build_source_sha,
-                "runtime_input_sha256": runtime_input_sha256,
-            }
-        )
+    expected_probe.update(
+        {
+            "runtime_build_source_sha": runtime_build_source_sha,
+            "runtime_input_sha256": runtime_input_sha256,
+        }
+    )
     for key, expected in expected_probe.items():
         if startup_probe.get(key) != expected:
             raise ValueError(f"{label} startup_probe.{key} does not match readiness")
@@ -310,7 +284,7 @@ def clean_git_source_sha(repo_root: Path | str = ".") -> str:
         raise RuntimeError(status.stderr.strip() or "failed to inspect git worktree")
     if status.stdout.strip():
         raise RuntimeError(
-            "queue-backed training requires a clean worktree so source and runtime are exact; "
+            "dstack training requires a clean worktree so source and runtime are exact; "
             "commit or isolate local changes first"
         )
     revision = subprocess.run(
@@ -355,7 +329,7 @@ def require_remote_source(source_sha: str, *, branch: str, repo_root: Path | str
         detail = result.stderr.strip()
         raise RuntimeError(
             f"exact source {source_sha} is not the pushed head of origin/{branch}; "
-            f"push the commit before running queue-backed training"
+            f"push the commit before running dstack training"
             + (f" ({detail})" if detail else "")
         )
 

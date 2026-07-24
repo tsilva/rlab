@@ -5,7 +5,7 @@ goal_id: "{goal_id}"
 # SuperMario single-state goals intentionally map the source state from goal identity.
 template_vars:
   state: "{goal_id}"
-# Default W&B tags for queue-backed recipes under this goal tree.
+# Default W&B tags for orchestrated recipes under this goal tree.
 tags:
 - "goal_id:{goal_id}"
 - "recipe_id:{recipe_id}"
@@ -49,7 +49,7 @@ reward_shapes:
       score_progress_clipped: false
 # Training contract for this goal.
 train:
-  # Run queue-backed checkpoint evaluation outside the training machine on Modal.
+  # Run checkpoint evaluation outside the training machine on Modal.
   checkpoint_eval_backend: modal
   # Shared checkpoint cadence for Mario training jobs.
   checkpoint_freq: 250000

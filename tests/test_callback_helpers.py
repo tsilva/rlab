@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 import gymnasium as gym
 import numpy as np
@@ -509,6 +510,27 @@ class MetricThresholdStopHelperTests(unittest.TestCase):
 
 
 class LedgerCheckpointHelperTests(unittest.TestCase):
+    def test_aligned_training_cap_is_reserved_for_the_final_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            callback = LedgerCheckpointHelper(
+                args=argparse.Namespace(
+                    run_name="run",
+                    run_description="",
+                    timesteps=500_000,
+                ),
+                config=EnvConfig(game="SuperMarioBros-Nes-v0", state="Level1-1"),
+                save_freq=1,
+                save_path=Path(tmp) / "checkpoints",
+                name_prefix="ppo_supermariobros-nes-v0",
+                metric_store_path=Path(tmp) / "rlab.sqlite",
+            )
+            callback.n_calls = 1
+            callback.num_timesteps = 500_000
+            callback.save_checkpoint = mock.Mock()  # type: ignore[method-assign]
+
+            self.assertTrue(callback._on_step())
+            callback.save_checkpoint.assert_not_called()
+
     def test_checkpoint_save_uses_exact_sb3_zip_path_for_hidden_uuid_base(self) -> None:
         class FakeModel:
             def __init__(self) -> None:
@@ -540,7 +562,7 @@ class LedgerCheckpointHelperTests(unittest.TestCase):
             self.assertTrue(callback.model.saved_bases[0].endswith(".zip"))  # type: ignore[attr-defined]
             self.assertFalse(any(final_path.parent.glob(".*.zip")))
             store = MetricStore(store_path)
-            rows = store.pending_evals()
+            rows = store.checkpoints()
             self.assertEqual(rows[0]["path"], str(final_path))
             self.assertEqual(rows[0]["step"], 500000)
 

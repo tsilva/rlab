@@ -3,12 +3,12 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from rlab.config_loader import QUEUE_TEMPLATE_VALUES, validate_template_string
+from rlab.config_loader import RECIPE_TEMPLATE_VALUES, validate_template_string
 from rlab.env_registry import env_supports_states, validate_provider_constructor_args
 from rlab.goal_schema import validate_goal_document_shape
 from rlab.seeds import validate_training_seed
 from rlab.train_config import (
-    queue_required_train_config_fields,
+    recipe_required_train_config_fields,
     validate_and_normalize_train_config,
 )
 from rlab.provider_config import provider_num_envs
@@ -31,8 +31,8 @@ TRAIN_RECIPE_REQUIRED_FIELDS = (
     "tags",
     "train_config",
 )
-TRAIN_RECIPE_REQUIRED_TRAIN_CONFIG_FIELDS = queue_required_train_config_fields()
-EXPLICIT_QUEUE_TRAIN_CONFIG_FIELDS = TRAIN_RECIPE_REQUIRED_TRAIN_CONFIG_FIELDS
+TRAIN_RECIPE_REQUIRED_TRAIN_CONFIG_FIELDS = recipe_required_train_config_fields()
+EXPLICIT_RECIPE_TRAIN_CONFIG_FIELDS = TRAIN_RECIPE_REQUIRED_TRAIN_CONFIG_FIELDS
 TRAIN_RECIPE_OPTIONAL_FIELDS = frozenset(
     {
         "schema_version",
@@ -57,16 +57,16 @@ TRAIN_RECIPE_OPTIONAL_FIELDS = frozenset(
 TRAIN_RECIPE_ALLOWED_FIELDS = frozenset(TRAIN_RECIPE_REQUIRED_FIELDS) | TRAIN_RECIPE_OPTIONAL_FIELDS
 
 
-def require_explicit_queue_train_config(
+def require_explicit_recipe_train_config(
     train_config: Mapping[str, Any],
     *,
     label: str = "train_config",
 ) -> None:
-    missing = [key for key in EXPLICIT_QUEUE_TRAIN_CONFIG_FIELDS if key not in train_config]
+    missing = [key for key in EXPLICIT_RECIPE_TRAIN_CONFIG_FIELDS if key not in train_config]
     if missing:
         raise ValueError(
             f"{label} missing required recipe-defined field(s): "
-            f"{', '.join(missing)}; queue-backed train jobs must define train values in recipes"
+            f"{', '.join(missing)}; train tasks must define these values in recipes"
         )
 
 
@@ -80,7 +80,7 @@ def _require_template(
     template = require_non_empty_string(document, key, label=label, strip=False)
     validate_template_string(
         template,
-        allowed_values=QUEUE_TEMPLATE_VALUES,
+        allowed_values=RECIPE_TEMPLATE_VALUES,
         required_fields=frozenset(required_fields),
         label=label_path(label, key),
     )
@@ -102,7 +102,7 @@ def validate_materialized_train_recipe(
     *,
     label: str = "recipe",
 ) -> None:
-    """Validate a goal-composed recipe immediately before queue persistence."""
+    """Validate a goal-composed recipe immediately before task submission."""
 
     require_mapping(document, label=label)
     _reject_unknown_fields(document, label=label)
@@ -147,7 +147,7 @@ def validate_materialized_train_recipe(
     validate_and_normalize_train_config(
         train_config,
         label=label_path(label, "train_config"),
-        required_keys=("game", "timesteps", "wandb", "wandb_mode", "wandb_artifact_storage_uri"),
+        required_keys=("game", "timesteps", "wandb", "wandb_mode"),
     )
     seed_span = provider_num_envs(train_config, explicit_n_envs=train_config.get("n_envs"))
     for index, seed in enumerate(seed_values):

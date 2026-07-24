@@ -11,18 +11,14 @@ DEFAULT_WANDB_ENTITY = "tsilva"
 DEFAULT_WANDB_PROJECT = "SuperMarioBros-Nes-v0"
 DEFAULT_WANDB_PROJECT_PATH = f"{DEFAULT_WANDB_ENTITY}/{DEFAULT_WANDB_PROJECT}"
 
-WANDB_ENV_PREFIXES = ("WANDB_", "AWS_")
-WANDB_ARTIFACT_ENV_KEYS = {
-    "CHECKPOINT_BUCKET_URI",
-}
+WANDB_ENV_PREFIXES = ("WANDB_",)
 
 
 def load_wandb_env(dotenv_path: str | Path = ".env") -> None:
-    """Load W&B and artifact storage env vars without adding a dotenv dependency."""
+    """Load W&B configuration without exposing object-storage credentials."""
     load_env_file(
         dotenv_path,
-        key_filter=lambda key: key.startswith(WANDB_ENV_PREFIXES)
-        or key in WANDB_ARTIFACT_ENV_KEYS,
+        key_filter=lambda key: key.startswith(WANDB_ENV_PREFIXES),
     )
 
 
@@ -100,15 +96,30 @@ def resolve_wandb_namespace(
 def configure_wandb_metrics(run):
     if run is not None:
         run.define_metric("global_step", summary="max")
+        run.define_metric("train/global_step", summary="max")
+        run.define_metric("eval/checkpoint_step", summary="max")
+        run.define_metric("orchestration/event_seq", summary="max")
+        run.define_metric(
+            "train/*",
+            step_metric="train/global_step",
+        )
+        run.define_metric(
+            "eval/*",
+            step_metric="eval/checkpoint_step",
+        )
+        run.define_metric(
+            "orchestration/*",
+            step_metric="orchestration/event_seq",
+        )
         run.define_metric(
             EVAL_ACCEPTANCE_PASS,
-            step_metric="global_step",
+            step_metric="eval/checkpoint_step",
             summary="max",
         )
         run.define_metric(
             TRAIN_EPISODE_RETURN_SHAPED_MEAN,
-            step_metric="global_step",
+            step_metric="train/global_step",
             summary="last",
         )
-        run.define_metric("*", step_metric="global_step")
+        run.define_metric("*", step_metric="orchestration/event_seq")
     return run

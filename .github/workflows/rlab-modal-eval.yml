@@ -58,7 +58,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ inputs.runtime_image_ref }}
+  group: ${{ github.workflow }}-${{ inputs.source_sha }}
   cancel-in-progress: false
 
 jobs:
@@ -76,6 +76,7 @@ jobs:
       RLAB_EXPECTED_SOURCE_SHA: ${{ inputs.source_sha }}
       RLAB_RUNTIME_INPUT_SHA256: ${{ inputs.runtime_input_sha256 }}
       RLAB_RUNTIME_BUILD_SOURCE_SHA: ${{ inputs.runtime_build_source_sha }}
+      MODAL_ENVIRONMENT: rlab-eval
       PYTHONPATH: src
     steps:
       - uses: actions/checkout@v6
@@ -109,10 +110,14 @@ jobs:
               config = load_modal_eval_config()
               app_name = modal_app_name(
                   config.app_name_prefix,
-                  os.environ["RLAB_MODAL_EVAL_RUNTIME_IMAGE"],
+                  os.environ["RLAB_EXPECTED_SOURCE_SHA"],
               )
               try:
-                  modal.Function.from_name(app_name, config.function_name).hydrate()
+                  modal.Function.from_name(
+                      app_name,
+                      config.function_name,
+                      environment_name=config.environment_name,
+                  ).hydrate()
               except modal.exception.NotFoundError:
                   required = True
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
@@ -120,7 +125,7 @@ jobs:
           PY
       - name: Deploy immutable Modal evaluator
         if: steps.modal_deployment.outputs.required == 'true'
-        run: uv run --no-sync modal deploy -m rlab.modal_app
+        run: uv run --no-sync modal deploy --env rlab-eval -m rlab.modal_app
       - name: Prove deployed worker image startup
         id: probe
         run: |
@@ -135,12 +140,18 @@ jobs:
 
           runtime_image_ref = os.environ["RLAB_MODAL_EVAL_RUNTIME_IMAGE"]
           config = load_modal_eval_config()
-          app_name = modal_app_name(config.app_name_prefix, runtime_image_ref)
-          result = modal.Function.from_name(app_name, "startup_probe").remote()
+          app_name = modal_app_name(
+              config.app_name_prefix,
+              os.environ["RLAB_EXPECTED_SOURCE_SHA"],
+          )
+          result = modal.Function.from_name(
+              app_name,
+              "startup_probe",
+              environment_name=config.environment_name,
+          ).remote()
           expected = {
               "app_name": app_name,
               "runtime_image_ref": runtime_image_ref,
-              "source_sha": os.environ["RLAB_RUNTIME_BUILD_SOURCE_SHA"],
               "runtime_build_source_sha": os.environ["RLAB_RUNTIME_BUILD_SOURCE_SHA"],
               "runtime_input_sha256": os.environ["RLAB_RUNTIME_INPUT_SHA256"],
           }
@@ -148,8 +159,8 @@ jobs:
               raise SystemExit(f"unexpected Modal startup probe result: {result!r}")
           if int(result.get("schema_version") or 0) != TRAIN_CONFIG_CONTRACT_SCHEMA_VERSION:
               raise SystemExit(f"unexpected Modal startup probe schema: {result!r}")
-          if result.get("object_store_configured") is not True:
-              raise SystemExit(f"Modal object store is not configured: {result!r}")
+          if result.get("presigned_object_transport") is not True:
+              raise SystemExit(f"Modal presigned object transport is not configured: {result!r}")
           contract_sha = str(result.get("train_config_contract_sha256") or "")
           if len(contract_sha) != 64:
               raise SystemExit(f"unexpected Modal train-config contract: {result!r}")

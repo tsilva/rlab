@@ -49,12 +49,12 @@ PROFILE_FIELDS_BY_KIND = {
     ),
     "local_smoke": frozenset(
         {
-            "machine",
             "goal_file",
+            "max_duration",
             "recipe_file",
-            "recipe_overrides",
             "runtime_image_ref_file",
             "seed",
+            "target",
         }
     ),
     "train_loop_throughput": frozenset(
@@ -264,12 +264,7 @@ def validate_benchmark_profile(payload: Mapping[str, Any], *, label: str = "prof
             raise ValueError(f"{label} does not support invocation-local workers")
         require_non_empty_string(payload, "goal_file", label=label, require_present=False)
         require_non_empty_string(payload, "recipe_file", label=label, require_present=False)
-        require_non_empty_string(payload, "machine", label=label, require_present=False)
-        string_list(
-            payload.get("recipe_overrides", ()),
-            label=f"{label}.recipe_overrides",
-            allow_empty=True,
-        )
+        require_non_empty_string(payload, "target", label=label, require_present=False)
         require_int(payload, "seed", label=label, minimum=0, require_present=False)
 
     allowed_fields = COMMON_PROFILE_FIELDS | PROFILE_FIELDS_BY_KIND[kind]
@@ -323,32 +318,29 @@ def _command(
 def _local_smoke_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
     goal_file = str(profile["goal_file"])
     recipe_file = str(profile["recipe_file"])
-    machine = str(profile.get("machine") or "local-macbook")
+    target = str(profile.get("target") or "b3")
     enqueue = [
         "rlab",
         "experiment",
         "launch",
-        "--from-head",
         "--goal-file",
         goal_file,
         "--recipe-file",
         recipe_file,
-        "--machine",
-        machine,
         "--seed",
         str(profile.get("seed", 123)),
-        "--checkpoint-eval-backend",
-        "none",
-        "--wait",
-        "terminal",
+        "--run-description",
+        str(profile.get("description") or "dstack local integration smoke"),
+        "--compute",
+        "local",
+        "--target",
+        target,
+        "--max-duration",
+        str(profile.get("max_duration") or "30m"),
         "--json",
     ]
     if profile.get("runtime_image_ref_file"):
         enqueue.extend(["--runtime-image-ref-file", str(profile["runtime_image_ref_file"])])
-    for override in string_list(
-        profile.get("recipe_overrides", ()), label="recipe_overrides", allow_empty=True
-    ):
-        enqueue.extend(["--set", override])
     return [_command("train-local-smoke", enqueue)]
 
 
@@ -406,11 +398,9 @@ def _train_loop_config(
     config["checkpoint_eval_stages"] = []
     config["early_stop"] = None
     config["post_train_eval_episodes"] = 0
-    config.pop("checkpoint_eval_asset_manifest", None)
     config.pop("rom_asset_manifest", None)
     config["wandb"] = False
     config["wandb_mode"] = "disabled"
-    config["wandb_artifact_storage_uri"] = ""
     config["seed"] = int(profile.get("seed", 123))
     config["run_name"] = str(
         run_name or profile.get("run_name") or f"benchmark_{_slug(str(profile['name']))}"

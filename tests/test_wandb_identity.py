@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 import pytest
 
-from rlab.artifacts import init_wandb
 from rlab.env import EnvConfig
+from rlab.wandb_publisher import _start_wandb
 from rlab.wandb_utils import (
     canonical_wandb_environment,
     game_family_for_environment,
@@ -121,10 +121,10 @@ def test_init_wandb_records_resolved_identity_and_submission_group() -> None:
 
     with (
         tempfile.TemporaryDirectory() as tmp,
-        patch("rlab.artifacts.load_wandb_env"),
+        patch("rlab.wandb_publisher.load_wandb_env"),
         patch.dict(sys.modules, {"wandb": SimpleNamespace(init=fake_init)}),
     ):
-        init_wandb(args, tmp, config)
+        _start_wandb(args, run_dir=tmp, config=config)
 
     assert captured["project"] == "Breakout-Atari2600-v0"
     assert captured["group"] == "bx0123456789abcdef"

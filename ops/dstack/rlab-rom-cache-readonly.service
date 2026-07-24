@@ -1,0 +1,12 @@
+[Unit]
+Description=Expose the rlab ROM cache as a read-only host mount
+Before=rlab-dstack-server.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/rlab-rom-cache-mount start
+ExecStop=/usr/local/sbin/rlab-rom-cache-mount stop
+
+[Install]
+WantedBy=multi-user.target

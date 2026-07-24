@@ -38,8 +38,6 @@ def runtime_contract(*, runtime_image_ref: str | None = None) -> dict[str, Any]:
     runtime_build_source_sha = os.environ.get("RLAB_SOURCE_SHA", "").strip()
     return {
         "schema_version": TRAIN_CONFIG_CONTRACT_SCHEMA_VERSION,
-        # Preserve source_sha for legacy runtime probes while naming its role explicitly.
-        "source_sha": runtime_build_source_sha,
         "runtime_build_source_sha": runtime_build_source_sha,
         "runtime_input_sha256": os.environ.get("RLAB_RUNTIME_INPUT_SHA256", "").strip(),
         "runtime_image_ref": str(

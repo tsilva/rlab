@@ -40,7 +40,6 @@ from rlab.training_backend import (
 )
 from rlab.rom_assets import manifest_from_train_config
 from rlab.rom_runtime import bind_cached_rom, runtime_cache_root
-from rlab.telemetry_cutover import require_runtime_admission
 
 
 GRACEFUL_STOP_SIGNAL = getattr(signal, "SIGUSR1", None)
@@ -101,13 +100,12 @@ def main(argv: list[str] | None = None) -> int:
     if os.environ.get(INTERNAL_LEARNER_ENV) != "1":
         raise RuntimeError(
             "rlab.train is an internal learner entrypoint; use `rlab experiment launch` to launch "
-            "a queue-backed Docker job"
+            "a dstack training task"
         )
     args = parse_train_args(argv)
-    require_runtime_admission(dict(args._materialized_train_config), environment=os.environ)
     recipe_json_path = Path(str(getattr(args, "recipe_json_path", "") or ""))
     if not recipe_json_path.is_file():
-        raise RuntimeError("queue-backed training requires the canonical versioned recipe.json")
+        raise RuntimeError("training requires the canonical versioned recipe.json")
     load_recipe_document(recipe_json_path)
     train_config = dict(args._materialized_train_config)
     backend_id = training_backend_id(train_config)
@@ -141,14 +139,10 @@ def main(argv: list[str] | None = None) -> int:
     store.init()
     store.register_recovery_manifest(
         {
-            "version": "telemetry-recovery-manifest-v1",
-            "queue_train_job_id": int(getattr(args, "queue_train_job_id", 0) or 0),
+            "version": "supervisor-sqlite-recovery-v1",
             "run_name": str(args.run_name),
-            "telemetry_protocol_version": int(args.telemetry_protocol_version),
-            "telemetry_generation": int(args.telemetry_generation),
-            "archive_policy": str(args.telemetry_durability_policy),
-            "parser_version": "metric-store-v2",
-            "adapter_version": "telemetry-adapters-v1",
+            "outbox": "sqlite-wal",
+            "durable_delivery": "private-r2-segments",
             "configuration_sha256": hashlib.sha256(
                 json.dumps(train_config, sort_keys=True, default=str).encode("utf-8")
             ).hexdigest(),
@@ -160,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
                 "project": str(getattr(args, "wandb_project", "") or ""),
                 "run_id": str(getattr(args, "wandb_run_id", "") or ""),
             },
-            "recovery_owner": "rlab-telemetry-recovery",
+            "recovery_owner": "run-supervisor",
         }
     )
     write_run_description(args, str(run_dir))

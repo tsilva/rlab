@@ -118,8 +118,6 @@ def build_parser(*, prog: str = "rlab eval run") -> argparse.ArgumentParser:
         parser,
         positional_artifact=True,
         model_help="Path to an rlab .zip policy artifact",
-        default_kind="checkpoint",
-        include_wandb_artifacts=False,
     )
     parser.add_argument("--policy", choices=["random", "right", "noop"], default="random")
     parser.add_argument("--episodes", type=int, default=20)

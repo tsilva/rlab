@@ -19,14 +19,21 @@ study = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(study)
 
 
+def immutable_run_id(value: int | str) -> str:
+    if isinstance(value, str) and value.startswith("rlab-"):
+        return value
+    return f"rlab-{int(value):032x}"
+
+
 def training_evidence(
     *,
     all_starts: bool = True,
     strong: bool = False,
     step: int | None = None,
     peak: float | None = None,
-    run_id: int = 1,
+    run_id: int | str = 1,
 ) -> dict:
+    resolved_run_id = immutable_run_id(run_id)
     return {
         "all_starts_succeeded": all_starts,
         "success_counts_by_start": {"Level1-3": 1 if all_starts else 0},
@@ -35,15 +42,15 @@ def training_evidence(
         "strong": strong,
         "observed_max_step": 50_176,
         "strong_threshold": 0.9,
-        "wandb_run_id": f"rlab-{run_id}",
-        "wandb_url": f"https://wandb.ai/e/p/runs/rlab-{run_id}",
+        "wandb_run_id": resolved_run_id,
+        "wandb_url": f"https://wandb.ai/e/p/runs/{resolved_run_id}",
         "wandb_state": "finished",
         "collected_at": "2026-01-01T00:00:00Z",
     }
 
 
 def run_record(
-    run_id: int,
+    run_id: int | str,
     seed: int,
     *,
     all_starts: bool = True,
@@ -51,12 +58,13 @@ def run_record(
     step: int | None = None,
     peak: float | None = None,
 ) -> dict:
+    resolved_run_id = immutable_run_id(run_id)
     return {
-        "run_id": run_id,
+        "run_id": resolved_run_id,
         "seed": seed,
         "classification": "completed",
-        "wandb_run_id": f"rlab-{run_id}",
-        "wandb_url": f"https://wandb.ai/e/p/runs/rlab-{run_id}",
+        "wandb_run_id": resolved_run_id,
+        "wandb_url": f"https://wandb.ai/e/p/runs/{resolved_run_id}",
         "training_evidence": training_evidence(
             all_starts=all_starts,
             strong=strong,
@@ -82,7 +90,7 @@ def base_state(root: Path) -> dict:
     }
     baseline_id = study.candidate_id({})
     return {
-        "schema_version": 2,
+        "schema_version": study.SCHEMA_VERSION,
         "study_id": "a" * 32,
         "input_hash": "b" * 64,
         "created_at": "2026-01-01T00:00:00Z",
@@ -112,7 +120,7 @@ def base_state(root: Path) -> dict:
         },
         "runtime": None,
         "policy": {
-            "machine": "beast-3",
+            "compute_target": "b3",
             "max_reserved_jobs": 48,
             "stale_round_limit": 3,
             "confirmation_runs": 5,
@@ -169,9 +177,8 @@ def add_closed_baseline(state: dict, *, passed: bool = False) -> None:
             "seeds": [state["screen_seed"]],
             "timesteps": state["rung_caps"]["screen"],
             "submission_key": "baseline-screen",
-            "batch_id": "bx" + "1" * 16,
             "status": "evidence_complete",
-            "run_ids": [1],
+            "run_ids": [record["run_id"]],
             "terminal_runs": [record],
             "closed": True,
         }
@@ -224,13 +231,13 @@ def reserve_args(state_path: Path, phase: str, **kwargs) -> SimpleNamespace:
         phase=phase,
         candidate_id=kwargs.get("candidate_id"),
         candidates_json=json.dumps(kwargs.get("candidates", [])),
-        effective_capacity=kwargs.get("capacity", 6),
+        effective_capacity=kwargs.get("capacity", 1),
         active_reservations=kwargs.get("active", 0),
     )
 
 
 class AutoresearchStudyTests(unittest.TestCase):
-    def test_init_ignores_v1_and_resumes_v2_with_distinct_rungs(self) -> None:
+    def test_init_ignores_old_schema_and_resumes_v3_with_distinct_rungs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             goal = root / "goal.yaml"
@@ -290,7 +297,7 @@ class AutoresearchStudyTests(unittest.TestCase):
 
         self.assertFalse(first["resumed"])
         self.assertTrue(second["resumed"])
-        self.assertEqual(state["schema_version"], 2)
+        self.assertEqual(state["schema_version"], study.SCHEMA_VERSION)
         self.assertEqual(state["screen_seed"], 123)
         self.assertEqual(state["pair_seeds"], [139, 155])
         self.assertEqual(state["confirmation_seeds"], [171, 187, 203, 219, 235])
@@ -302,7 +309,7 @@ class AutoresearchStudyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "study.json"
             path.write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "v1 studies are historical"):
+            with self.assertRaisesRegex(ValueError, "v1/v2 studies are historical"):
                 study.load_state(path)
 
     def test_candidate_identity_and_validation_remain_bounded(self) -> None:
@@ -339,7 +346,7 @@ class AutoresearchStudyTests(unittest.TestCase):
             payload = json.loads(output.getvalue())
             wave = study.load_state(state_path)["waves"][0]
 
-        command = payload["reserved"][0]["command"]
+        command = payload["reserved"][0]["commands"][0]["command"]
         self.assertEqual(wave["seeds"], [123])
         self.assertEqual(wave["timesteps"], 20_480)
         self.assertIn("--checkpoint-eval-backend", command)
@@ -375,18 +382,14 @@ class AutoresearchStudyTests(unittest.TestCase):
         self.assertNotIn(123, wave["seeds"])
         self.assertEqual(wave["timesteps"], 50_176)
 
-    def test_search_screen_reserves_three_one_seed_candidates_and_pair_budget(self) -> None:
+    def test_search_screen_reserves_one_candidate_for_the_single_b3_slot(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             state_path = root / "runs/autoresearch/test/study.json"
             state = base_state(root)
             add_closed_baseline(state)
             study.atomic_json(state_path, state)
-            candidates = [
-                {"delta": {"learning_rate": 0.0005}},
-                {"delta": {"learning_rate": 0.0015}},
-                {"delta": {"learning_rate": 0.002}},
-            ]
+            candidates = [{"delta": {"learning_rate": 0.0005}}]
             output = io.StringIO()
             with (
                 mock.patch.object(study, "git_head", return_value=state["source_sha"]),
@@ -398,12 +401,15 @@ class AutoresearchStudyTests(unittest.TestCase):
             payload = json.loads(output.getvalue())
             updated = study.load_state(state_path)
 
-        self.assertTrue(payload["launch_concurrently"])
-        self.assertEqual(len(payload["reserved"]), 3)
+        self.assertFalse(payload["launch_concurrently"])
+        self.assertEqual(len(payload["reserved"]), 1)
         self.assertEqual({len(wave["seeds"]) for wave in updated["waves"][1:]}, {1})
-        self.assertEqual(updated["reserved_jobs"], 3)
+        self.assertEqual(updated["reserved_jobs"], 1)
         self.assertTrue(
-            all("--checkpoint-eval-backend" in row["command"] for row in payload["reserved"])
+            all(
+                "--checkpoint-eval-backend" in row["commands"][0]["command"]
+                for row in payload["reserved"]
+            )
         )
 
     def test_score_uses_strong_count_crossing_censor_and_worst_peak(self) -> None:
@@ -441,12 +447,26 @@ class AutoresearchStudyTests(unittest.TestCase):
                 "input_sha256": "e" * 64,
                 "build_source_sha": "f" * 40,
             }
+            run_id = immutable_run_id(7)
             launch = {
-                "batch_id": wave["batch_id"],
-                "run_ids": [7],
-                "runtime_image_ref": runtime["image_ref"],
-                "runtime_input_sha256": runtime["input_sha256"],
-                "runtime_build_source_sha": runtime["build_source_sha"],
+                "runs": [
+                    {
+                        "run_id": run_id,
+                        "seed": 123,
+                        "submission_key": wave["submission_key"],
+                        "source_sha": state["source_sha"],
+                        "goal_file": state["goal_path"],
+                        "recipe_file": state["recipe_path"],
+                        "recipe_overrides": study.expected_recipe_overrides(
+                            state, wave
+                        ),
+                        "run_description": study.run_description(state, wave, 123),
+                        "checkpoint_eval_backend": "none",
+                        "image_digest": runtime["image_ref"],
+                        "runtime_input_sha256": runtime["input_sha256"],
+                        "runtime_build_source_sha": runtime["build_source_sha"],
+                    }
+                ]
             }
             with (
                 mock.patch.object(study, "git_head", return_value=state["source_sha"]),
@@ -461,16 +481,29 @@ class AutoresearchStudyTests(unittest.TestCase):
                     )
                 )
             event = {
-                "run_id": 7,
-                "submission": {"key": wave["submission_key"], "seed": 123},
-                "terminal_classification": "completed",
-                "evaluation": {"acceptance_required": False},
-                "wandb": {
-                    "remote_verified": True,
-                    "run_id": "rlab-7",
-                    "url": "https://wandb.ai/e/p/runs/rlab-7",
+                "run_id": run_id,
+                "scientific_success": False,
+                "dstack": {"terminal": True},
+                "attempt_terminal": {
+                    "state": "succeeded",
+                    "acceptance_required": False,
+                    "wandb_high_water_mark": 12,
+                    "drain": {
+                        "complete": True,
+                        "wandb_remote_high_water_mark": 12,
+                    },
                 },
-                "wandb_terminal": {"state": "finished"},
+                "semantic": {
+                    "terminal": None,
+                    "manifest": {
+                        "seed": 123,
+                        "compute": {"submission_key": wave["submission_key"]},
+                        "wandb": {
+                            "run_id": run_id,
+                            "url": f"https://wandb.ai/e/p/runs/{run_id}",
+                        },
+                    },
+                },
             }
             with redirect_stdout(io.StringIO()):
                 study.command_record_terminal(
@@ -485,16 +518,22 @@ class AutoresearchStudyTests(unittest.TestCase):
                 )
             self.assertEqual(
                 study.next_action(study.load_state(state_path)),
-                {"action": "collect_training_evidence", "run_id": 7},
+                {"action": "collect_training_evidence", "run_id": run_id},
             )
-            evidence = training_evidence(all_starts=True, strong=True, step=18_000, peak=0.94, run_id=7)
+            evidence = training_evidence(
+                all_starts=True,
+                strong=True,
+                step=18_000,
+                peak=0.94,
+                run_id=run_id,
+            )
             with (
                 mock.patch.object(study, "git_head", return_value=state["source_sha"]),
                 mock.patch.object(study, "fetch_training_evidence", return_value=evidence),
                 redirect_stdout(io.StringIO()),
             ):
                 study.command_collect_training_evidence(
-                    SimpleNamespace(study=str(state_path), run_id=7)
+                    SimpleNamespace(study=str(state_path), run_id=run_id)
                 )
             output = io.StringIO()
             with (
@@ -503,7 +542,7 @@ class AutoresearchStudyTests(unittest.TestCase):
                 redirect_stdout(output),
             ):
                 study.command_collect_training_evidence(
-                    SimpleNamespace(study=str(state_path), run_id=7)
+                    SimpleNamespace(study=str(state_path), run_id=run_id)
                 )
             persisted = study.load_state(state_path)
 
@@ -550,9 +589,8 @@ class AutoresearchStudyTests(unittest.TestCase):
                         "seeds": [123],
                         "timesteps": 20_480,
                         "submission_key": "first-screen",
-                        "batch_id": "bx" + "3" * 16,
                         "status": "evidence_complete",
-                        "run_ids": [20],
+                        "run_ids": [passed["run_id"]],
                         "terminal_runs": [passed],
                         "closed": False,
                     },
@@ -563,9 +601,8 @@ class AutoresearchStudyTests(unittest.TestCase):
                         "seeds": [123],
                         "timesteps": 20_480,
                         "submission_key": "second-screen",
-                        "batch_id": "bx" + "4" * 16,
                         "status": "launched",
-                        "run_ids": [21],
+                        "run_ids": [immutable_run_id(21)],
                         "terminal_runs": [],
                         "closed": False,
                     },
@@ -582,27 +619,24 @@ class AutoresearchStudyTests(unittest.TestCase):
     def test_authoritative_evidence_uses_all_start_counts_and_canonical_peak(
         self,
     ) -> None:
-        facts = {
-            "scope_sha256": "a" * 64,
-            "comparability_sha256": "b" * 64,
-            "wandb_url": "https://wandb.ai/e/p/runs/rlab-42",
-            "dimensions": {"rank_direction": "maximize"},
-            "metrics": {
+        run = SimpleNamespace(
+            id="rlab-42",
+            url="https://wandb.ai/e/p/runs/rlab-42",
+            state="finished",
+            scan_history=lambda **_kwargs: [
+                {
                 "global_step": 50_176,
                 "train/outcome/success/from/A/count": 2,
                 "train/outcome/success/from/B/count": 0,
-                "train/outcome/success/window_100/rate/min/peak": 0.91,
-                "train/outcome/success/window_100/rate/min/first_threshold_step": 30_000,
-            },
-        }
-        connection = mock.MagicMock()
+                "train/outcome/success/window_100/rate/min": 0.91,
+                }
+            ],
+        )
+        api = SimpleNamespace(run=lambda _path: run)
+        fake_wandb = SimpleNamespace(Api=lambda: api)
         with (
-            mock.patch.dict("os.environ", {"DATABASE_URL": "postgres://test"}),
-            mock.patch("rlab.job_queue.connect", return_value=connection),
-            mock.patch(
-                "rlab.telemetry_evidence.training_facts_by_wandb_run_id",
-                return_value=facts,
-            ),
+            mock.patch.dict("sys.modules", {"wandb": fake_wandb}),
+            mock.patch("rlab.wandb_utils.load_wandb_env"),
         ):
             evidence = study.fetch_training_evidence(
                 url="https://wandb.ai/e/p/runs/rlab-42",
@@ -613,16 +647,16 @@ class AutoresearchStudyTests(unittest.TestCase):
 
         self.assertFalse(evidence["all_starts_succeeded"])
         self.assertEqual(evidence["peak_window_100_rate_min"], 0.91)
-        self.assertEqual(evidence["first_strong_step"], 30_000)
+        self.assertEqual(evidence["first_strong_step"], 50_176)
         self.assertTrue(evidence["strong"])
-        self.assertEqual(evidence["authority"], "run_final_exact")
-        connection.close.assert_called_once_with()
+        self.assertEqual(evidence["authority"], "wandb_history")
 
     def test_eval_backed_or_unverified_terminal_pauses(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             state_path = root / "runs/autoresearch/test/study.json"
             state = base_state(root)
+            run_id = immutable_run_id(9)
             wave = {
                 "phase": "baseline-screen",
                 "round": 0,
@@ -630,25 +664,37 @@ class AutoresearchStudyTests(unittest.TestCase):
                 "seeds": [123],
                 "timesteps": 20_480,
                 "submission_key": "bad-terminal",
-                "batch_id": "bx" + "2" * 16,
                 "status": "launched",
-                "run_ids": [9],
+                "run_ids": [run_id],
                 "terminal_runs": [],
                 "closed": False,
             }
             state["waves"].append(wave)
             study.atomic_json(state_path, state)
             event = {
-                "run_id": 9,
-                "submission": {"key": "bad-terminal", "seed": 123},
-                "terminal_classification": "accepted",
-                "evaluation": {"acceptance_required": True},
-                "wandb": {
-                    "remote_verified": True,
-                    "run_id": "rlab-9",
-                    "url": "https://wandb.ai/e/p/runs/rlab-9",
+                "run_id": run_id,
+                "scientific_success": True,
+                "dstack": {"terminal": True},
+                "attempt_terminal": {
+                    "state": "succeeded",
+                    "acceptance_required": True,
+                    "wandb_high_water_mark": 12,
+                    "drain": {
+                        "complete": True,
+                        "wandb_remote_high_water_mark": 12,
+                    },
                 },
-                "wandb_terminal": {"state": "finished"},
+                "semantic": {
+                    "terminal": {"state": "succeeded"},
+                    "manifest": {
+                        "seed": 123,
+                        "compute": {"submission_key": "bad-terminal"},
+                        "wandb": {
+                            "run_id": run_id,
+                            "url": f"https://wandb.ai/e/p/runs/{run_id}",
+                        },
+                    },
+                },
             }
             with redirect_stdout(io.StringIO()):
                 study.command_record_terminal(

@@ -339,7 +339,22 @@ def run_sb3_on_policy(
         context.mark_ready()
 
         final_model_path = context.run_dir / "final_model.zip"
-        model.learn(total_timesteps=args.timesteps, callback=callback, progress_bar=True)
+        if args.resume:
+            remaining_timesteps = max(0, int(args.timesteps) - int(model.num_timesteps))
+            print(
+                f"resuming learner at step={model.num_timesteps} "
+                f"remaining={remaining_timesteps} cap={args.timesteps}",
+                flush=True,
+            )
+            if remaining_timesteps:
+                model.learn(
+                    total_timesteps=remaining_timesteps,
+                    callback=callback,
+                    progress_bar=True,
+                    reset_num_timesteps=False,
+                )
+        else:
+            model.learn(total_timesteps=args.timesteps, callback=callback, progress_bar=True)
         save_model_bundle(
             model=model,
             context=context,

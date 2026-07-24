@@ -23,7 +23,6 @@ from rlab.env_registry import (
 )
 from rlab.goal_schema import validate_goal_document_shape
 from rlab.reward_programs import goal_for_contract_validation, validate_reward_shape_catalog
-from rlab.machines import DEFAULT_MACHINE_REGISTRY, load_machine_registry
 from rlab.modal_eval_config import load_modal_eval_config
 from rlab.metric_names import metric_path_segment
 from rlab.recipe_documents import (
@@ -668,10 +667,6 @@ def validate_env_config_file(path: Path) -> None:
         raise ValueError(f"{label} must not define state or states")
 
 
-def validate_machine_config(repo_root: Path) -> None:
-    load_machine_registry(repo_root / DEFAULT_MACHINE_REGISTRY)
-
-
 def _capture_issue(issues: list[ValidationIssue], path: Path, repo_root: Path, action: Any) -> None:
     try:
         action()
@@ -784,13 +779,6 @@ def validate_experiment_tree(repo_root: Path | str = Path(".")) -> ValidationRep
     counts["env_configs"] = len(env_configs)
     for path in env_configs:
         _capture_issue(issues, path, repo_root, lambda path=path: validate_env_config_file(path))
-
-    machines_path = experiments_dir / "machines.yaml"
-    counts["machine_configs"] = int(machines_path.is_file())
-    if machines_path.is_file():
-        _capture_issue(issues, machines_path, repo_root, lambda: validate_machine_config(repo_root))
-    else:
-        issues.append(ValidationIssue(path="experiments/machines.yaml", message="file is required"))
 
     modal_eval_path = experiments_dir / "modal_eval.yaml"
     counts["modal_eval_configs"] = int(modal_eval_path.is_file())

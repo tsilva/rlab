@@ -137,7 +137,7 @@ class StudyDiscoveryTests(unittest.TestCase):
                     study.command_init(args)
             self.assertEqual(study.git_head(root), head)
 
-    def test_materializes_seed_in_reserved_description(self) -> None:
+    def test_generates_seed_specific_description_without_recipe_pollution(self) -> None:
         state = {
             "study_id": "abcdef123456",
             "candidates": {"candidate": {"delta": {"learning_rate": 0.000125}}},
@@ -149,8 +149,37 @@ class StudyDiscoveryTests(unittest.TestCase):
         }
         overrides = study.materialized_recipe_overrides(state, wave, 139)
         self.assertEqual(overrides[0], "train.backend.config.learning_rate=0.000125")
-        self.assertIn("seed 139", overrides[-1])
-        self.assertNotIn("{seed}", overrides[-1])
+        self.assertEqual(overrides[-1], "train.timesteps=50")
+        self.assertIn("seed 139", study.run_description(state, wave, 139))
+
+    def test_launch_command_is_one_training_only_dstack_run_per_seed(self) -> None:
+        state = {
+            "study_id": "abcdef123456",
+            "goal_path": "experiments/goals/game/goal/_goal.yaml",
+            "recipe_path": "experiments/goals/game/goal/recipes/ppo.yaml",
+            "policy": {"compute_target": "b3"},
+            "candidates": {"candidate": {"delta": {"learning_rate": 0.000125}}},
+        }
+        wave = {
+            "candidate_id": "candidate",
+            "phase": "search-pair",
+            "timesteps": 50,
+            "submission_key": "autoresearch-wave",
+            "seeds": [123, 139],
+        }
+
+        command = study.launch_command(state, wave, 139)
+
+        self.assertEqual(command.count("--seed"), 1)
+        self.assertEqual(command[command.index("--seed") + 1], "139")
+        self.assertEqual(
+            command[command.index("--checkpoint-eval-backend") + 1],
+            "none",
+        )
+        self.assertEqual(command[command.index("--target") + 1], "b3")
+        self.assertIn("--existing-runtime-only", command)
+        self.assertNotIn("--machine", command)
+        self.assertNotIn("--request-id", command)
 
 
 if __name__ == "__main__":

@@ -268,40 +268,29 @@ def execute_attempt(
             model_path = write_downloaded_file(str(payload["model_get_url"]), root / "model.zip")
             if file_sha256(model_path) != str(contract["checkpoint_sha256"]):
                 raise ValueError("downloaded checkpoint hash mismatch")
-            versioned_bundle = "recipe_sha256" in contract
-            model_metadata = None
-            if versioned_bundle:
-                metadata_path = write_downloaded_file(
-                    str(payload["model_document_get_url"]), root / "model.json"
-                )
-                if file_sha256(metadata_path) != str(payload["model_document_sha256"]):
-                    raise ValueError("downloaded model document hash mismatch")
-                recipe_path = write_downloaded_file(
-                    str(payload["recipe_get_url"]), root / "recipe.json"
-                )
-                if file_sha256(recipe_path) != str(contract["recipe_sha256"]):
-                    raise ValueError("downloaded recipe hash mismatch")
-                bundle = load_policy_bundle(root)
-                if bundle.recipe["format_version"] != int(contract["recipe_format_version"]):
-                    raise ValueError("downloaded recipe format version mismatch")
-                if evaluation_contract_sha256(bundle.recipe) != str(
-                    contract["evaluation_contract_sha256"]
-                ):
-                    raise ValueError("downloaded evaluation contract hash mismatch")
-            else:
-                metadata_path = write_downloaded_file(
-                    str(payload["metadata_get_url"]), root / "metadata.json"
-                )
-                if file_sha256(metadata_path) != str(payload["metadata_sha256"]):
-                    raise ValueError("downloaded checkpoint metadata hash mismatch")
-                model_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata_path = write_downloaded_file(
+                str(payload["model_document_get_url"]), root / "model.json"
+            )
+            if file_sha256(metadata_path) != str(payload["model_document_sha256"]):
+                raise ValueError("downloaded model document hash mismatch")
+            recipe_path = write_downloaded_file(
+                str(payload["recipe_get_url"]), root / "recipe.json"
+            )
+            if file_sha256(recipe_path) != str(contract["recipe_sha256"]):
+                raise ValueError("downloaded recipe hash mismatch")
+            bundle = load_policy_bundle(root)
+            if bundle.recipe["format_version"] != int(contract["recipe_format_version"]):
+                raise ValueError("downloaded recipe format version mismatch")
+            if evaluation_contract_sha256(bundle.recipe) != str(
+                contract["evaluation_contract_sha256"]
+            ):
+                raise ValueError("downloaded evaluation contract hash mismatch")
             asset = contract.get("asset")
             rom_path: Path | None = None
             if isinstance(asset, Mapping):
                 normalized_asset = validate_rom_asset_manifest(
                     asset,
                     require_object_uri=False,
-                    allow_legacy=True,
                 )
                 cached_rom = cache_path(cache_root, normalized_asset)
                 try:
@@ -323,9 +312,9 @@ def execute_attempt(
                 {
                     "contract": contract,
                     "execution_id": execution,
-                    "bundle_root": str(root) if versioned_bundle else None,
+                    "bundle_root": str(root),
                     "model_path": str(model_path),
-                    "model_metadata": model_metadata,
+                    "model_metadata": None,
                     "rom_path": str(rom_path) if rom_path is not None else None,
                     "rom_asset_manifest": dict(asset) if isinstance(asset, Mapping) else None,
                     "preview": payload.get("preview"),

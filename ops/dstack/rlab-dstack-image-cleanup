@@ -1,0 +1,90 @@
+#!/bin/sh
+set -eu
+
+DSTACK_BIN="${DSTACK_BIN:-/opt/rlab/dstack-cli/bin/dstack}"
+DSTACK_SERVER_URL="${DSTACK_SERVER_URL:-http://127.0.0.1:3000}"
+DSTACK_PROJECT="${DSTACK_PROJECT:-main}"
+RLAB_IMAGE_REPOSITORY="${RLAB_IMAGE_REPOSITORY:-ghcr.io/tsilva/rlab/rlab-train}"
+RLAB_IMAGE_CLEANUP_DRY_RUN="${RLAB_IMAGE_CLEANUP_DRY_RUN:-0}"
+
+if [ -z "${DSTACK_SERVER_ADMIN_TOKEN:-}" ]; then
+    echo "DSTACK_SERVER_ADMIN_TOKEN is required; refusing cleanup" >&2
+    exit 1
+fi
+if [ ! -x "$DSTACK_BIN" ]; then
+    echo "pinned dstack CLI is unavailable at $DSTACK_BIN; refusing cleanup" >&2
+    exit 1
+fi
+
+export DSTACK_SERVER_URL DSTACK_PROJECT
+DSTACK_TOKEN="$DSTACK_SERVER_ADMIN_TOKEN"
+export DSTACK_TOKEN
+unset DSTACK_SERVER_ADMIN_TOKEN
+
+cleanup_dir="$(mktemp -d /run/rlab-dstack-image-cleanup.XXXXXX)"
+trap 'rm -r -- "$cleanup_dir"' EXIT HUP INT TERM
+runs_json="$cleanup_dir/runs.json"
+demanded_images="$cleanup_dir/demanded-images.txt"
+running_image_ids="$cleanup_dir/running-image-ids.txt"
+HOME="$cleanup_dir/home"
+export HOME
+mkdir -p "$HOME/.cache/.dstack/cli"
+# dstack 0.20.28 otherwise performs a daily version check and may print a
+# non-JSON update notice before `ps --json`.
+touch "$HOME/.cache/.dstack/cli/last_check"
+
+if ! "$DSTACK_BIN" ps --json >"$runs_json"; then
+    echo "dstack run query failed; refusing cleanup" >&2
+    exit 1
+fi
+if ! jq -e '.runs | type == "array"' "$runs_json" >/dev/null; then
+    echo "dstack returned an invalid run inventory; refusing cleanup" >&2
+    exit 1
+fi
+
+jq -r '
+  .runs[]
+  | select(
+      .status == "pending"
+      or .status == "submitted"
+      or .status == "provisioning"
+      or .status == "running"
+      or .status == "terminating"
+    )
+  | (
+      .run_spec.configuration.image // empty
+    ), (
+      .jobs[]?.job_spec.image_name // empty
+    )
+' "$runs_json" \
+    | sed 's/^docker://' \
+    | sort -u >"$demanded_images"
+
+docker ps -q \
+    | while IFS= read -r container_id; do
+        docker inspect --format '{{.Image}}' "$container_id"
+    done \
+    | sort -u >"$running_image_ids"
+
+docker image ls --no-trunc --digests \
+    --filter "reference=${RLAB_IMAGE_REPOSITORY}" \
+    --format '{{.Repository}}	{{.Digest}}	{{.ID}}' \
+    | while IFS="$(printf '\t')" read -r repository digest image_id; do
+        if [ "$repository" != "$RLAB_IMAGE_REPOSITORY" ] || [ "$digest" = "<none>" ]; then
+            continue
+        fi
+        immutable_ref="${repository}@${digest}"
+        if grep -Fqx "$immutable_ref" "$demanded_images"; then
+            echo "preserving demanded image $immutable_ref"
+            continue
+        fi
+        if grep -Fqx "$image_id" "$running_image_ids"; then
+            echo "preserving running image $immutable_ref"
+            continue
+        fi
+        if [ "$RLAB_IMAGE_CLEANUP_DRY_RUN" = "1" ]; then
+            echo "would remove unused image $immutable_ref"
+            continue
+        fi
+        docker image rm "$immutable_ref"
+    done

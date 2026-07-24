@@ -37,7 +37,7 @@ class TrainConfigField:
     help: str | None = None
     serialize: SerializeMode = "str"
     environment: bool = False
-    queue_required: bool = False
+    recipe_required: bool = False
     non_empty: bool = False
     validation_min: float | None = None
     validation_max: float | None = None
@@ -167,7 +167,7 @@ def load_materialized_train_config(path: Path) -> dict[str, Any]:
 
 
 def materialized_train_args(path: Path) -> argparse.Namespace:
-    """Load queue/runtime JSON without routing an internal payload through CLI parsing."""
+    """Load supervisor/runtime JSON without routing it through CLI parsing."""
 
     payload = load_materialized_train_config(path)
     defaults = {field.dest: _env_default(EnvConfig(), field) for field in TRAIN_CONFIG_FIELDS}
@@ -218,8 +218,8 @@ def train_config_field_for_key(key: str) -> TrainConfigField | None:
     return None
 
 
-def queue_required_train_config_fields() -> tuple[str, ...]:
-    return tuple(field.dest for field in TRAIN_CONFIG_FIELDS if field.queue_required)
+def recipe_required_train_config_fields() -> tuple[str, ...]:
+    return tuple(field.dest for field in TRAIN_CONFIG_FIELDS if field.recipe_required)
 
 
 def env_config_arg_fields() -> tuple[TrainConfigField, ...]:
@@ -507,7 +507,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         "--timesteps",
         type_name="int",
         default=1_000_000,
-        queue_required=True,
+        recipe_required=True,
         validation_min=1,
         source_section="train",
     ),
@@ -528,7 +528,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         default=None,
         serialize="json",
         mapping_value=True,
-        queue_required=True,
+        recipe_required=True,
         help="Selected training backend id and backend-local configuration.",
     ),
     TrainConfigField(
@@ -573,7 +573,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         "--game",
         env_default="game",
         environment=True,
-        queue_required=True,
+        recipe_required=True,
         non_empty=True,
         help="Provider game id. Defaults to RETRO_GAME when set.",
     ),
@@ -787,7 +787,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         non_empty=True,
         source_section="goal_train",
         help=(
-            "Checkpoint evaluation backend. Queue-backed jobs default to Modal; "
+            "Checkpoint evaluation backend. Orchestrated runs default to Modal; "
             "local is an explicit fallback; none creates a training-only run that cannot "
             "establish promotion or acceptance."
         ),
@@ -800,17 +800,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         serialize="json",
         mapping_value=True,
         cli_exposed=False,
-        help="Queue-materialized immutable external ROM identity.",
-    ),
-    TrainConfigField(
-        "checkpoint_eval_asset_manifest",
-        "--checkpoint-eval-asset-manifest",
-        type_name="json",
-        default=None,
-        serialize="json",
-        mapping_value=True,
-        cli_exposed=False,
-        help="Deprecated historical alias for rom_asset_manifest.",
+        help="Supervisor-materialized immutable external ROM identity.",
     ),
     TrainConfigField(
         "checkpoint_eval_seed_protocol",
@@ -828,7 +818,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         default=EVAL_SEED_START,
         validation_min=EVAL_SEED_START,
         cli_exposed=False,
-        help="Materialized base seed for queue-backed checkpoint evaluation.",
+        help="Materialized base seed for checkpoint evaluation.",
     ),
     TrainConfigField(
         "post_train_eval_max_steps",
@@ -884,7 +874,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         "--wandb",
         kind="store_true",
         default=False,
-        queue_required=True,
+        recipe_required=True,
         help="Log training to Weights & Biases",
     ),
     TrainConfigField("wandb_project", "--wandb-project", default=None),
@@ -896,7 +886,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         "--wandb-mode",
         default="online",
         choices=WANDB_MODE_CHOICES,
-        queue_required=True,
+        recipe_required=True,
         non_empty=True,
     ),
     TrainConfigField(
@@ -927,17 +917,25 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         help="Exact pushed source revision defining this run and recipe composition.",
     ),
     TrainConfigField(
-        "machine",
-        "--machine",
-        default="",
-        help="Exact queue machine recorded as run metadata; does not affect training.",
-    ),
-    TrainConfigField(
-        "batch_id",
-        "--batch-id",
+        "compute_target",
+        "--compute-target",
         default="",
         cli_exposed=False,
-        help="Immutable queue submission cohort recorded in W&B config.",
+        help="Selected dstack fleet or instance recorded in W&B config.",
+    ),
+    TrainConfigField(
+        "attempt_id",
+        "--attempt-id",
+        default="",
+        cli_exposed=False,
+        help="Immutable orchestration attempt recorded in W&B config.",
+    ),
+    TrainConfigField(
+        "dstack_task",
+        "--dstack-task",
+        default="",
+        cli_exposed=False,
+        help="dstack task identity recorded in W&B config.",
     ),
     TrainConfigField(
         "campaign_id",
@@ -952,14 +950,6 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         default="",
         cli_exposed=False,
         help="Provider-neutral game family recorded in W&B config.",
-    ),
-    TrainConfigField(
-        "retry_of_job_id",
-        "--retry-of-job-id",
-        type_name="int",
-        default=0,
-        cli_exposed=False,
-        help="Source queue job id for an explicit retry; 0 means not a retry.",
     ),
     TrainConfigField(
         "goal_slug", "--goal-slug", default="", help="Research goal slug recorded in W&B config."
@@ -1072,70 +1062,10 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         help="Hydra/OmegaConf dotlist overrides applied to the checked-in recipe.",
     ),
     TrainConfigField(
-        "queue_train_job_id",
-        "--queue-train-job-id",
-        type_name="int",
-        default=0,
-        help="Queue train job id recorded in W&B config; 0 means local/unqueued.",
-    ),
-    TrainConfigField(
         "wandb_run_id",
         "--wandb-run-id",
         default="",
         cli_exposed=False,
-        help="Stable W&B run id materialized for queue-backed publisher ownership.",
-    ),
-    TrainConfigField(
-        "telemetry_transport",
-        "--telemetry-transport",
-        default="legacy_local",
-        choices=("legacy_local", "neon_mailbox_v1"),
-        cli_exposed=False,
-        help="Internal queue-owned telemetry transport contract.",
-    ),
-    TrainConfigField(
-        "telemetry_protocol_version",
-        "--telemetry-protocol-version",
-        type_name="int",
-        default=2,
-        choices=(2,),
-        cli_exposed=False,
-        help="Canonical telemetry producer and recovery protocol.",
-    ),
-    TrainConfigField(
-        "telemetry_generation",
-        "--telemetry-generation",
-        type_name="int",
-        default=1,
-        cli_exposed=False,
-        help="Cutover generation binding this producer credential and canonical ledger.",
-    ),
-    TrainConfigField(
-        "telemetry_durability_policy",
-        "--telemetry-durability-policy",
-        default="local_mirrored_v1",
-        choices=(
-            "queued_dual_r2_v1",
-            "local_mirrored_v1",
-            "local_singlecopy_optout_v1",
-        ),
-        help=(
-            "Telemetry archive durability contract. local_singlecopy_optout_v1 is an "
-            "explicit durability opt-out and is never eligible for durable completion."
-        ),
-    ),
-    TrainConfigField(
-        "no_wandb_artifacts",
-        "--no-wandb-artifacts",
-        kind="store_true",
-        default=False,
-        help="Disable W&B model uploads",
-    ),
-    TrainConfigField(
-        "wandb_artifact_storage_uri",
-        "--wandb-artifact-storage-uri",
-        default="",
-        queue_required=True,
-        help="Optional s3://bucket/prefix base URI for model artifacts. Model zips are stored under <game-id>/... below that URI, and W&B logs reference artifacts instead of storing file bytes.",
+        help="Stable W&B run id owned by the in-container supervisor.",
     ),
 )

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import threading
 from collections import Counter
 from copy import deepcopy
 from dataclasses import replace
@@ -12,7 +11,6 @@ from unittest.mock import patch
 import pytest
 
 from rlab.artifacts import install_model_bundle
-from rlab.checkpoint_coordinator import reconcile_orphan_models
 from rlab.env import resolve_env_config
 from rlab.env_config import env_config_from_mapping
 from rlab.env_metadata import training_metadata
@@ -34,10 +32,8 @@ from rlab.policy_bundle import (
 )
 from rlab.eval_runner import normalized_evaluation_request
 from rlab.recipe_documents import compose_train_document
-from rlab.metric_store import MetricStore
 from rlab.train_config import validate_and_normalize_train_config
 from rlab.training_backend import training_backend_config, training_backend_config_hash
-from rlab.wandb_artifacts import model_metadata_path
 
 
 GOAL = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml")
@@ -97,7 +93,6 @@ def test_atomic_bundle_install_commits_only_a_complete_replayable_bundle(
             "recipe_json_path": str(recipe_path),
             "run_name": "atomic-bundle",
             "run_description": "Atomic bundle regression.",
-            "queue_train_job_id": 9,
             "runtime_image_ref": RUNTIME,
             "source_sha": "a" * 40,
             "algorithm_id": "ppo",
@@ -141,131 +136,6 @@ def test_atomic_bundle_install_commits_only_a_complete_replayable_bundle(
             checkpoint_step_value=100,
         )
     assert not list(model_path.parent.glob(".*.zip"))
-
-
-def test_atomic_bundle_install_survives_concurrent_orphan_reconciliation(
-    tmp_path: Path,
-) -> None:
-    recipe_document = level1_1_recipe_document()
-    recipe_path = write_canonical_json(tmp_path / "recipe.json", recipe_document)
-    train_config = dict(recipe_document["recipe"]["train_config"])
-    config = resolve_env_config(env_config_from_mapping(train_config))
-    run_dir = tmp_path / "run"
-    model_path = run_dir / "checkpoints" / "model_100_steps.zip"
-    store = MetricStore(run_dir / "rlab.sqlite")
-    store.init()
-    args = argparse.Namespace(
-        **{
-            **train_config,
-            "recipe_json_path": str(recipe_path),
-            "run_name": "concurrent-cleanup",
-            "run_description": "Concurrent checkpoint cleanup regression.",
-            "queue_train_job_id": 9,
-            "runtime_image_ref": RUNTIME,
-            "source_sha": "a" * 40,
-            "algorithm_id": "ppo",
-            "model_class": "stable_baselines3.ppo.ppo.PPO",
-            "training_backend_id": "sb3.ppo",
-            "training_backend_config_hash": training_backend_config_hash(train_config),
-        }
-    )
-
-    def save_during_reconciliation(staged_path: Path) -> None:
-        staged_path.write_bytes(b"checkpoint")
-        reconcile_orphan_models(store, args, run_dir)
-
-    install_model_bundle(
-        model_path,
-        save_checkpoint=save_during_reconciliation,
-        args=args,
-        config=config,
-        kind="checkpoint",
-        checkpoint_step_value=100,
-    )
-
-    bundle = load_policy_bundle_from_checkpoint(model_path)
-    assert bundle is not None
-    assert bundle.checkpoint_path.read_bytes() == b"checkpoint"
-    assert not list(model_path.parent.glob(".checkpoint-staging-*"))
-
-
-def test_orphan_reconciliation_accepts_post_commit_concurrent_ledger_insert(
-    tmp_path: Path,
-) -> None:
-    recipe_document = level1_1_recipe_document()
-    recipe_path = write_canonical_json(tmp_path / "recipe.json", recipe_document)
-    train_config = dict(recipe_document["recipe"]["train_config"])
-    config = resolve_env_config(env_config_from_mapping(train_config))
-    run_dir = tmp_path / "run"
-    model_path = run_dir / "checkpoints" / "model_100_steps.zip"
-    store = MetricStore(run_dir / "rlab.sqlite")
-    store.init()
-    args = argparse.Namespace(
-        **{
-            **train_config,
-            "checkpoint_eval_backend": "none",
-            "recipe_json_path": str(recipe_path),
-            "run_name": "post-commit-race",
-            "run_description": "Post-commit checkpoint ledger race regression.",
-            "queue_train_job_id": 9,
-            "runtime_image_ref": RUNTIME,
-            "source_sha": "a" * 40,
-            "algorithm_id": "ppo",
-            "model_class": "stable_baselines3.ppo.ppo.PPO",
-            "training_backend_id": "sb3.ppo",
-            "training_backend_config_hash": training_backend_config_hash(train_config),
-        }
-    )
-    install_model_bundle(
-        model_path,
-        save_checkpoint=lambda path: path.write_bytes(b"checkpoint"),
-        args=args,
-        config=config,
-        kind="checkpoint",
-        checkpoint_step_value=100,
-    )
-
-    loaded = threading.Event()
-    resume = threading.Event()
-    failures: list[BaseException] = []
-    original_load = load_policy_bundle_from_checkpoint
-
-    def load_then_pause(path: Path):
-        bundle = original_load(path)
-        loaded.set()
-        assert resume.wait(timeout=5)
-        return bundle
-
-    def reconcile() -> None:
-        try:
-            reconcile_orphan_models(store, args, run_dir)
-        except BaseException as exc:
-            failures.append(exc)
-
-    with patch(
-        "rlab.checkpoint_coordinator.load_policy_bundle_from_checkpoint",
-        side_effect=load_then_pause,
-    ):
-        worker = threading.Thread(target=reconcile)
-        worker.start()
-        assert loaded.wait(timeout=5)
-        producer_id = store.record_checkpoint(
-            run_name=args.run_name,
-            kind="checkpoint",
-            step=100,
-            path=model_path,
-            metadata_path=model_metadata_path(model_path),
-            eval_required=False,
-        )
-        resume.set()
-        worker.join(timeout=5)
-
-    assert not worker.is_alive()
-    assert failures == []
-    assert producer_id == 1
-    assert [row["id"] for row in store.checkpoints()] == [1]
-    assert len(store.pending_artifact_uploads()) == 1
-    assert store.pending_evals() == []
 
 
 def test_post400_acceptance_assigns_every_snapshot_to_a_fixed_lane() -> None:
@@ -398,15 +268,15 @@ def test_recipe_materializes_the_environment_identity_executed_by_the_learner() 
 
 def test_recipe_keeps_eval_asset_identity_but_removes_private_locations() -> None:
     materialized = compose_train_document(GOAL, RECIPE)
-    materialized["train_config"]["checkpoint_eval_asset_manifest"] = {
-        "schema_version": 1,
+    materialized["train_config"]["rom_asset_manifest"] = {
+        "schema_version": 2,
         "game": "SuperMarioBros-Nes-v0",
         "filename": "mario.nes",
+        "size_bytes": 1024,
         "sha256": "c" * 64,
         "provider_rom_identity": "d" * 40,
         "provider_rom_identity_algorithm": "sha1-provider-body-v1",
         "object_uri": "s3://private-bucket/mario.nes",
-        "local_path": "/private/roms/mario.nes",
     }
 
     document = build_recipe_document(
@@ -419,9 +289,10 @@ def test_recipe_keeps_eval_asset_identity_but_removes_private_locations() -> Non
     )
 
     expected_asset = {
-        "schema_version": 1,
+        "schema_version": 2,
         "game": "SuperMarioBros-Nes-v0",
         "filename": "mario.nes",
+        "size_bytes": 1024,
         "sha256": "c" * 64,
         "provider_rom_identity": "d" * 40,
         "provider_rom_identity_algorithm": "sha1-provider-body-v1",
@@ -500,7 +371,7 @@ def test_future_model_version_fails_before_checkpoint_access(tmp_path: Path) -> 
             load_policy_bundle(tmp_path)
     assert MODEL_DOCUMENT_TYPE in str(error.value)
     assert "format_version 999" in str(error.value)
-    assert "[1, 2]" in str(error.value)
+    assert "[2]" in str(error.value)
 
 
 def test_model_v2_records_session_local_snapshot_curriculum_summary(tmp_path: Path) -> None:
@@ -540,14 +411,15 @@ def test_model_v2_records_session_local_snapshot_curriculum_summary(tmp_path: Pa
     )
 
 
-def test_legacy_model_v1_remains_loadable(tmp_path: Path) -> None:
+def test_retired_model_v1_is_rejected(tmp_path: Path) -> None:
     write_bundle(tmp_path)
     model_path = tmp_path / "model.json"
     model = json.loads(model_path.read_text(encoding="utf-8"))
     model["format_version"] = 1
     write_canonical_json(model_path, model)
 
-    assert load_policy_bundle(tmp_path).model["format_version"] == 1
+    with pytest.raises(UnsupportedPolicyDocumentVersion, match="format_version 1"):
+        load_policy_bundle(tmp_path)
 
 
 def test_known_recipe_schema_rejects_unknown_fields_and_urls(tmp_path: Path) -> None:
@@ -585,8 +457,12 @@ def test_all_source_kinds_normalize_to_identical_eval_and_seed_requests(
     local = load_policy_bundle(tmp_path, source=str(tmp_path))
     sources = (
         local,
-        replace(local, source="wandb://entity/project/artifact:v7", revision="v7"),
-        replace(local, source="training://job/42/checkpoint/8", revision="ledger-8"),
+        replace(
+            local,
+            source="https://models.example/runs/rlab-test/checkpoints/1-a/model.zip",
+            revision="a" * 64,
+        ),
+        replace(local, source="rlab://run/rlab-test/checkpoint/a", revision="a" * 64),
         replace(local, source="hf://tsilva/policy", revision="d" * 40),
     )
     requests = [normalized_evaluation_request(bundle, episodes=5, n_envs=1) for bundle in sources]

@@ -14,55 +14,14 @@ config = load_modal_eval_config(repo_root / "experiments" / "modal_eval.yaml")
 runtime_image_ref = os.environ.get("RLAB_MODAL_EVAL_RUNTIME_IMAGE", "").strip()
 if not runtime_image_ref:
     raise RuntimeError("RLAB_MODAL_EVAL_RUNTIME_IMAGE must be an immutable docker image ref")
+source_sha = os.environ.get("RLAB_EXPECTED_SOURCE_SHA", "").strip()
 registry_ref = runtime_image_ref.removeprefix("docker:")
-app_name = modal_app_name(config.app_name_prefix, runtime_image_ref)
+app_name = modal_app_name(config.app_name_prefix, source_sha)
 registry_secret_name = os.environ.get("RLAB_MODAL_REGISTRY_SECRET", "").strip()
 registry_secret = modal.Secret.from_name(registry_secret_name) if registry_secret_name else None
-object_store_secret_name = (
-    os.environ.get("RLAB_MODAL_OBJECT_STORE_SECRET", "").strip() or "rlab-object-store"
-)
-object_store_secret = modal.Secret.from_name(object_store_secret_name)
 image = modal.Image.from_registry(registry_ref, secret=registry_secret)
 image = image.env({"RLAB_MODAL_EVAL_RUNTIME_IMAGE": runtime_image_ref})
 app = modal.App(app_name)
-rom_cache_root = Path("/rom-cache")
-rom_volume = modal.Volume.from_name(
-    "rlab-rom-cache-v2",
-    create_if_missing=True,
-    version=2,
-)
-
-
-@app.function(
-    name="stage_rom",
-    image=image,
-    cpu=0.25,
-    memory=256,
-    min_containers=0,
-    buffer_containers=0,
-    max_containers=1,
-    retries=0,
-    timeout=120,
-    startup_timeout=config.startup_timeout_seconds,
-    single_use_containers=False,
-    include_source=False,
-    volumes={str(rom_cache_root): rom_volume},
-)
-def stage_rom(payload: dict) -> dict[str, Any]:
-    from rlab.rom_assets import stage_rom_from_url, validate_rom_asset_manifest
-
-    manifest = validate_rom_asset_manifest(
-        payload["manifest"],
-        require_object_uri=False,
-        allow_legacy=True,
-    )
-    path = stage_rom_from_url(
-        manifest,
-        url=str(payload["rom_get_url"]),
-        cache_root=rom_cache_root,
-    )
-    rom_volume.commit()
-    return {"status": "ready", "sha256": manifest["sha256"], "path": str(path)}
 
 
 @app.function(
@@ -80,15 +39,11 @@ def stage_rom(payload: dict) -> dict[str, Any]:
     single_use_containers=config.single_use_containers,
     include_source=False,
     serialized=True,
-    secrets=[object_store_secret],
-    volumes={str(rom_cache_root): rom_volume.with_mount_options(read_only=True)},
 )
 def evaluate_checkpoint(payload: dict) -> dict:
     from rlab.modal_eval_worker import execute_attempt
 
-    if isinstance(payload.get("contract", {}).get("asset"), dict):
-        rom_volume.reload()
-    return execute_attempt(payload, cache_root=rom_cache_root)
+    return execute_attempt(payload, cache_root=Path("/tmp/rlab-rom-cache"))
 
 
 @app.function(
@@ -105,7 +60,6 @@ def evaluate_checkpoint(payload: dict) -> dict:
     single_use_containers=True,
     include_source=False,
     serialized=True,
-    secrets=[object_store_secret],
 )
 def startup_probe() -> dict[str, Any]:
     """Prove the deployed image can import its packaged evaluator contract."""
@@ -114,14 +68,6 @@ def startup_probe() -> dict[str, Any]:
     return {
         **runtime_contract(runtime_image_ref=runtime_image_ref),
         "app_name": app_name,
-        "object_store_configured": all(
-            os.environ.get(name, "").strip()
-            for name in (
-                "AWS_ACCESS_KEY_ID",
-                "AWS_SECRET_ACCESS_KEY",
-                "AWS_REGION",
-                "AWS_S3_ENDPOINT_URL",
-                "CHECKPOINT_BUCKET_URI",
-            )
-        ),
+        "source_deployment": source_sha,
+        "presigned_object_transport": True,
     }

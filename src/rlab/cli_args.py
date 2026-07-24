@@ -34,7 +34,3 @@ def add_dry_run_arg(parser: argparse.ArgumentParser) -> None:
         action="store_false",
         help="Preview planned changes without applying them.",
     )
-
-
-def add_direct_database_arg(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--direct", action="store_true", help="Use DIRECT_DATABASE_URL.")

@@ -124,6 +124,12 @@ class LedgerCheckpointHelper(CallbackHelper):
     def _on_step(self) -> bool:
         if self.save_freq <= 0 or self.n_calls % self.save_freq != 0:
             return True
+        training_cap = getattr(self.args, "timesteps", None)
+        if training_cap is not None and self.num_timesteps >= int(training_cap):
+            # The learner writes the authoritative final checkpoint immediately
+            # after learn() returns. Avoid an immutable periodic/final collision at
+            # an exactly aligned training cap.
+            return True
         self.save_checkpoint(self.num_timesteps, kind="checkpoint")
         return True
 

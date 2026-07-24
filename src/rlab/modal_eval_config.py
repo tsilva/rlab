@@ -55,6 +55,7 @@ def _bool(value: object, *, label: str) -> bool:
 @dataclass(frozen=True)
 class ModalEvalConfig:
     enabled: bool
+    environment_name: str
     app_name_prefix: str
     function_name: str
     cleanup_enabled: bool
@@ -62,8 +63,7 @@ class ModalEvalConfig:
     cleanup_grace_seconds: int
     cleanup_max_stops_per_pass: int
     hard_max_active: int
-    per_run_budget_usd: float
-    rolling_24h_budget_usd: float
+    alert_per_run_usd: float
     cpu: float
     memory_mib: int
     min_containers: int
@@ -90,10 +90,6 @@ class ModalEvalConfig:
             return self.confirm_timeout_seconds
         return self.screen_timeout_seconds
 
-    def reserved_cost(self, timeout_seconds: int) -> float:
-        return self.estimated_hourly_usd * float(timeout_seconds) / 3600.0
-
-
 def load_modal_eval_config(path: Path = DEFAULT_MODAL_EVAL_CONFIG) -> ModalEvalConfig:
     document = load_mapping_document(path, label=str(path))
     allowed = {
@@ -117,7 +113,10 @@ def load_modal_eval_config(path: Path = DEFAULT_MODAL_EVAL_CONFIG) -> ModalEvalC
     cost = _mapping(document.get("cost"), label="cost")
     protocol = _mapping(document.get("protocol"), label="protocol")
     sections = {
-        "deployment": (deployment, {"app_name_prefix", "function_name"}),
+        "deployment": (
+            deployment,
+            {"environment_name", "app_name_prefix", "function_name"},
+        ),
         "cleanup": (
             cleanup,
             {"enabled", "interval_seconds", "grace_seconds", "max_stops_per_pass"},
@@ -126,8 +125,7 @@ def load_modal_eval_config(path: Path = DEFAULT_MODAL_EVAL_CONFIG) -> ModalEvalC
             limits,
             {
                 "hard_max_active",
-                "per_run_budget_usd",
-                "rolling_24h_budget_usd",
+                "alert_per_run_usd",
             },
         ),
         "resources": (
@@ -172,10 +170,12 @@ def load_modal_eval_config(path: Path = DEFAULT_MODAL_EVAL_CONFIG) -> ModalEvalC
         raise ValueError("protocol.max_attempts must not exceed 2")
     prefix = str(deployment.get("app_name_prefix") or "").strip()
     function_name = str(deployment.get("function_name") or "").strip()
-    if not prefix or not function_name:
+    environment_name = str(deployment.get("environment_name") or "").strip()
+    if not environment_name or not prefix or not function_name:
         raise ValueError("deployment names must be non-empty")
     result = ModalEvalConfig(
         enabled=_bool(document.get("enabled", False), label="enabled"),
+        environment_name=environment_name,
         app_name_prefix=prefix,
         function_name=function_name,
         cleanup_enabled=_bool(cleanup.get("enabled", False), label="cleanup.enabled"),
@@ -189,11 +189,8 @@ def load_modal_eval_config(path: Path = DEFAULT_MODAL_EVAL_CONFIG) -> ModalEvalC
             cleanup.get("max_stops_per_pass"), label="cleanup.max_stops_per_pass"
         ),
         hard_max_active=hard_cap,
-        per_run_budget_usd=_positive_float(
-            limits.get("per_run_budget_usd"), label="limits.per_run_budget_usd"
-        ),
-        rolling_24h_budget_usd=_positive_float(
-            limits.get("rolling_24h_budget_usd"), label="limits.rolling_24h_budget_usd"
+        alert_per_run_usd=_positive_float(
+            limits.get("alert_per_run_usd"), label="limits.alert_per_run_usd"
         ),
         cpu=_positive_float(resources.get("cpu"), label="resources.cpu"),
         memory_mib=_positive_int(resources.get("memory_mib"), label="resources.memory_mib"),
@@ -249,8 +246,8 @@ def load_modal_eval_config(path: Path = DEFAULT_MODAL_EVAL_CONFIG) -> ModalEvalC
     return result
 
 
-def modal_app_name(prefix: str, runtime_image_ref: str) -> str:
-    digest = str(runtime_image_ref).rsplit("@sha256:", 1)[-1]
-    if digest == runtime_image_ref or len(digest) < 12:
-        raise ValueError("Modal eval runtime must be an immutable sha256 image ref")
-    return f"{prefix}-{digest[:12]}"
+def modal_app_name(prefix: str, source_sha: str) -> str:
+    revision = str(source_sha).strip().lower()
+    if len(revision) != 40 or any(character not in "0123456789abcdef" for character in revision):
+        raise ValueError("Modal eval source must be a full lowercase Git SHA")
+    return f"{prefix}-{revision[:12]}"

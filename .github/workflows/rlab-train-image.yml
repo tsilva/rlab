@@ -15,8 +15,10 @@ on:
       - .github/workflows/rlab-train-dependencies.yml
       - .github/workflows/rlab-train-image.yml
       - containers/train/**
-      - experiments/machines.yaml
+      - experiments/goals/**
+      - ops/dstack/**
       - experiments/modal_eval.yaml
+      - experiments/recipes/**
       - scripts/**
       - src/**
       - pyproject.toml

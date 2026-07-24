@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import json
 import tempfile
 import unittest
@@ -31,11 +30,7 @@ from rlab.metric_names import EVAL_FULL_DURATION_SECONDS, metric_path_segment
 from rlab.modal_eval_protocol import SEED_PROTOCOL
 from rlab.targets import target_for_game
 from rlab.task_kernels import Outcome
-from rlab.checkpoint_eval_worker import (
-    checkpoint_eval_config_from_args,
-    eval_score as eval_checkpoint_score,
-    log_checkpoint_eval_metrics,
-)
+from rlab.ranking import rank_score, require_objective_rank
 from rlab.task_kernels import default_task_document
 from rlab.video import PolicyObservationPreview
 from rlab.checkpoint_acceptance import build_checkpoint_eval_contract
@@ -45,23 +40,11 @@ MARIO_RANK = [
     "min(leader/checkpoint/step)",
     "max(eval/full/episode/return/mean)",
 ]
-MARIO_RANK_V4 = [
-    "max(eval/full/outcome/success/rate/min)",
-    "max(eval/full/outcome/success/rate/mean)",
-    "min(leader/checkpoint/steps_to_goal)",
-    "max(eval/full/episode/return/mean)",
-]
-
-
-class FakeWandbRun:
-    def __init__(self, summary: object | None = None) -> None:
-        self.payload: dict[str, object] | None = None
-        self.kwargs: dict[str, object] | None = None
-        self.summary = {} if summary is None else summary
-
-    def log(self, payload: dict[str, object], **kwargs: object) -> None:
-        self.payload = payload
-        self.kwargs = kwargs
+def eval_checkpoint_score(
+    metrics: dict[str, object],
+    selection_rank: object,
+) -> tuple[float, ...]:
+    return rank_score(metrics, require_objective_rank(selection_rank))
 
 
 class EvalPreviewEquivalenceTests(unittest.TestCase):
@@ -182,136 +165,6 @@ class EvalByStartTableTests(unittest.TestCase):
         self.assertEqual(indexed[("A", "level_change")][8:], [1, 0.5])
         self.assertEqual(indexed[("A", "life_loss")][8:], [1, 0.5])
         self.assertEqual(indexed[("B", "max_steps")][1:7], [1, 0, 0.0, 100.0, 0.0, 100.0])
-
-    def test_full_eval_logs_one_structured_by_start_table(self) -> None:
-        class FakeTable:
-            def __init__(self, *, columns, data) -> None:
-                self.columns = columns
-                self.data = data
-
-        metrics = checkpoint_metrics(
-            episode_results=[
-                {
-                    "start_state": "A",
-                    "return": 4.0,
-                    "level_complete": True,
-                    "events": ["level_change"],
-                    "terminated": True,
-                    "truncated": False,
-                }
-            ]
-        )
-        run = FakeWandbRun()
-        with patch("wandb.Table", FakeTable):
-            log_checkpoint_eval(run, metrics)
-
-        table = run.payload["eval/full/by_start"]
-        self.assertEqual(
-            table.columns[0:4],
-            [
-                "checkpoint_step",
-                "start_id",
-                "episodes",
-                "success_count",
-            ],
-        )
-        self.assertEqual(
-            table.data,
-            [[120000, "A", 1, 1, 1.0, 4.0, 0.0, 4.0, "", 0, 0.0]],
-        )
-
-    def test_full_eval_accepts_preaggregated_modal_table_rows(self) -> None:
-        class FakeTable:
-            def __init__(self, *, columns, data) -> None:
-                self.columns = columns
-                self.data = data
-
-        row = ["A", 2, 1, 0.5, 5.0, 4.0, 5.0, "life_loss", 1, 0.5]
-        run = FakeWandbRun()
-        with patch("wandb.Table", FakeTable):
-            log_checkpoint_eval(
-                run,
-                checkpoint_metrics(_eval_by_start_rows=[row]),
-            )
-
-        self.assertEqual(run.payload["eval/full/by_start"].data, [[120000, *row]])
-
-
-class WandbLikeSummary:
-    def __init__(self) -> None:
-        self.values: dict[str, object] = {"leader/checkpoint/steps_to_goal": 500000}
-
-    def get(self, key: str, default: object = None) -> object:
-        return self.values.get(key, default)
-
-    def __getitem__(self, key: str) -> object:
-        return self.values[key]
-
-    def __setitem__(self, key: str, value: object) -> None:
-        self.values[key] = value
-
-    def __delitem__(self, key: str) -> None:
-        del self.values[key]
-
-    def __contains__(self, key: str) -> bool:
-        return key in self.values
-
-    def __getattr__(self, key: str) -> object:
-        raise KeyError(key)
-
-
-def checkpoint_metrics(**overrides: object) -> dict[str, object]:
-    metrics: dict[str, object] = {
-        "checkpoint_step": 120000,
-        "checkpoint_artifact": "entity/project/run-checkpoint:step-120000",
-        "return_mean": 10.0,
-        "return_std": 1.0,
-        "return_median": 10.0,
-        "episode_length_mean": 100.0,
-        "max_x_mean": 300.0,
-        "max_x_max": 400.0,
-        "max_level_x_mean": 300.0,
-        "max_level_x_max": 400.0,
-        "death_count": 1,
-        "death_rate": 0.1,
-        "best_episode": {"return": 12.0, "max_x_pos": 400.0},
-        "eval/full/episode/return/mean": 10.0,
-        "eval/full/episode/return/std": 1.0,
-        "eval/full/episode/return/median": 10.0,
-        "eval/full/episode/return/best": 12.0,
-        "eval/full/episode/length/mean": 100.0,
-        "eval/full/episode/count": 10,
-        "eval/full/outcome/reason/level_change/rate": 0.9,
-        "eval/full/outcome/success/rate/min": 0.8,
-        "eval/full/outcome/success/rate/mean": 0.9,
-        EVAL_FULL_DURATION_SECONDS: 12.5,
-    }
-    metrics.update(overrides)
-    return metrics
-
-
-def log_checkpoint_eval(
-    run: FakeWandbRun,
-    metrics: dict[str, object] | None = None,
-    *,
-    step: int = 120000,
-    artifact_ref: str = "entity/project/run-checkpoint:step-120000",
-    schema_version: int = 5,
-    selection_rank: list[str] | None = None,
-) -> None:
-    log_checkpoint_eval_metrics(
-        wandb_run=run,
-        args=argparse.Namespace(
-            selection_rank=MARIO_RANK if selection_rank is None else selection_rank,
-            metrics_schema_version=schema_version,
-        ),
-        metrics=checkpoint_metrics() if metrics is None else metrics,
-        checkpoint_path=Path(f"/tmp/model_{step}_steps.zip"),
-        checkpoint_step_value=step,
-        artifact_ref=artifact_ref,
-        config=EnvConfig(game="SuperMarioBros-Nes-v0", hud_crop_top=32),
-    )
-
 
 class EvalMetricTests(unittest.TestCase):
     def test_eval_model_identity_uses_a2c_checkpoint_metadata(self) -> None:
@@ -722,93 +575,6 @@ class EvalMetricTests(unittest.TestCase):
             eval_checkpoint_score(faster_lower_reward, MARIO_RANK),
             eval_checkpoint_score(slower_higher_reward, MARIO_RANK),
         )
-
-    def test_async_checkpoint_eval_logs_checkpoint_step_as_metric(self) -> None:
-        run = FakeWandbRun()
-
-        log_checkpoint_eval(run)
-
-        assert run.payload is not None
-        self.assertEqual(run.kwargs, {})
-        self.assertEqual(run.payload["global_step"], 120000)
-        self.assertNotIn("eval/full/checkpoint/step", run.payload)
-        self.assertEqual(run.payload[EVAL_FULL_DURATION_SECONDS], 12.5)
-        self.assertEqual(run.summary["leader/checkpoint/eval_source"], "async_worker")
-        self.assertEqual(run.summary["leader/checkpoint/success_rate_min"], 0.8)
-        self.assertEqual(run.summary["leader/checkpoint/success_rate_mean"], 0.9)
-        self.assertEqual(run.summary["leader/checkpoint/return_mean"], 10.0)
-        self.assertNotIn("leader/checkpoint/steps_to_goal", run.summary)
-
-    def test_async_checkpoint_summary_handles_wandb_summary_without_pop(self) -> None:
-        run = FakeWandbRun(summary=WandbLikeSummary())
-
-        log_checkpoint_eval(run)
-
-        self.assertNotIn("leader/checkpoint/steps_to_goal", run.summary)
-        self.assertEqual(run.summary["leader/checkpoint/eval_source"], "async_worker")
-
-    def test_async_checkpoint_summary_tracks_steps_to_goal(self) -> None:
-        run = FakeWandbRun()
-        metrics = checkpoint_metrics(
-            **{
-                "checkpoint_step": 3500000,
-                "checkpoint_artifact": "entity/project/run-checkpoint:step-3500000",
-                "eval/full/outcome/reason/level_change/rate": 1.0,
-                "eval/full/outcome/success/rate/min": 1.0,
-                "eval/full/outcome/success/rate/mean": 1.0,
-            }
-        )
-
-        log_checkpoint_eval(
-            run,
-            metrics,
-            step=3500000,
-            artifact_ref="entity/project/run-checkpoint:step-3500000",
-            schema_version=4,
-            selection_rank=MARIO_RANK_V4,
-        )
-
-        self.assertEqual(run.summary["leader/checkpoint/steps_to_goal"], 3500000)
-
-    def test_checkpoint_eval_config_uses_goal_termination(self) -> None:
-        task = default_task_document("mario")
-        task["termination"] = {
-            **task["termination"],
-            "failure": [],
-            "success": ["level_change"],
-        }
-        eval_config = checkpoint_eval_config_from_args(
-            argparse.Namespace(
-                checkpoint_eval_environment={
-                    "env_provider": "supermariobrosnes-turbo",
-                    "game": "SuperMarioBros-Nes-v0",
-                    "task": task,
-                }
-            )
-        )
-
-        self.assertEqual(eval_config.task["termination"]["failure"], [])
-        self.assertEqual(eval_config.task["termination"]["success"], ["level_change"])
-
-    def test_checkpoint_eval_config_does_not_inherit_training_termination(self) -> None:
-        task = default_task_document("mario")
-        task["termination"] = {
-            **task["termination"],
-            "failure": [],
-            "success": [],
-        }
-        eval_config = checkpoint_eval_config_from_args(
-            argparse.Namespace(
-                checkpoint_eval_environment={
-                    "env_provider": "supermariobrosnes-turbo",
-                    "game": "SuperMarioBros-Nes-v0",
-                    "task": task,
-                }
-            )
-        )
-
-        self.assertEqual(eval_config.task["termination"]["failure"], [])
-        self.assertEqual(eval_config.task["termination"]["success"], [])
 
     def test_metric_path_segment_preserves_retro_state_names(self) -> None:
         self.assertEqual(metric_path_segment("Level1-2"), "Level1-2")

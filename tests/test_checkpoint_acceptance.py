@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-from types import SimpleNamespace
 
 import pytest
 
@@ -13,15 +12,10 @@ from rlab.checkpoint_acceptance import (
     manifest_index,
     validate_episode_rows,
 )
-from rlab.checkpoint_coordinator import _eval_payload
 from rlab.checkpoint_eval_config import checkpoint_eval_max_steps
 from rlab.modal_eval_protocol import (
-    PROTOCOL_SCHEMA_VERSION,
     SEED_PROTOCOL,
-    checkpoint_announcement_eval_payload,
     execution_key,
-    stable_hash,
-    validate_announcement,
 )
 
 
@@ -81,7 +75,6 @@ def test_rejection_is_valid_partial_evidence_only_through_first_failure() -> Non
         validate_episode_rows(
             [*rows, row(entries[2])], contract=value, verdict="rejected"
         )
-
 
 def test_accepted_evidence_requires_every_identity_once_and_all_successes() -> None:
     value = contract(episodes=4, n_envs=2)
@@ -181,113 +174,3 @@ def test_checkpoint_eval_compiler_rejects_more_lanes_than_episodes() -> None:
                 "checkpoint_eval_seed_protocol": SEED_PROTOCOL,
             }
         )
-
-
-def test_checkpoint_announcement_staged_payload_preserves_canonical_hash() -> None:
-    environment = {
-        "env_provider": "rlab",
-        "game": "Bandit-v0",
-        "task": {"termination": {"max_episode_steps": 50}},
-    }
-    config = {
-        "env_provider": "rlab",
-        "checkpoint_eval_environment": environment,
-        "checkpoint_eval_stages": [
-            {
-                "name": "screen",
-                "episodes": 2,
-                "n_envs": 1,
-                "pass": [{"metric": "eval/x", "operator": ">=", "threshold": 1.0}],
-                "candidate_stop": False,
-            }
-        ],
-        "checkpoint_eval_asset_manifest": None,
-        "checkpoint_eval_n_envs": 2,
-        "checkpoint_eval_seed": 10_000,
-        "checkpoint_eval_seed_protocol": SEED_PROTOCOL,
-        "post_train_eval_episodes": 3,
-        "post_train_eval_max_steps": 0,
-    }
-
-    payload = checkpoint_announcement_eval_payload(config)
-
-    assert _eval_payload(SimpleNamespace(**config)) == payload
-    assert stable_hash(payload) == "b9ff29b73809a61d292753a7828e1ea9831c3a0faa0387f5838c5b5862003e6b"
-    assert tuple(payload) == (
-        "environment",
-        "stages",
-        "n_envs",
-        "max_steps",
-        "seed",
-        "seed_protocol",
-        "asset",
-        "promotion_episodes",
-    )
-
-    runtime_image_ref = "docker:example.invalid/rlab@sha256:" + "d" * 64
-    materialized = {**config, "runtime_image_ref": runtime_image_ref}
-    announcement = {
-        "schema_version": PROTOCOL_SCHEMA_VERSION,
-        "runtime_image_ref": runtime_image_ref,
-        "sha256": "a" * 64,
-        "model_document_sha256": "b" * 64,
-        "recipe_sha256": "c" * 64,
-        "evaluation_contract_sha256": "e" * 64,
-        "recipe_format_version": 1,
-        "eval": payload,
-    }
-    assert validate_announcement(
-        announcement, materialized_train_config=materialized
-    ) == announcement
-
-    changed = copy.deepcopy(announcement)
-    changed["eval"]["max_steps"] = 51
-    with pytest.raises(ValueError, match="does not match"):
-        validate_announcement(changed, materialized_train_config=materialized)
-
-
-def test_checkpoint_announcement_payload_materializes_historical_seed_default() -> None:
-    payload = checkpoint_announcement_eval_payload(
-        {
-            "checkpoint_eval_environment": {
-                "env_provider": "rlab",
-                "game": "Bandit-v0",
-                "task": {"termination": {"max_episode_steps": 1}},
-            },
-            "checkpoint_eval_n_envs": 2,
-            "post_train_eval_episodes": 2,
-            "post_train_eval_max_steps": 1,
-        }
-    )
-
-    assert payload["seed"] == 10_000
-    assert payload["seed_protocol"] == SEED_PROTOCOL
-
-
-def test_checkpoint_announcement_acceptance_payload_preserves_canonical_hash() -> None:
-    acceptance = build_checkpoint_eval_contract(
-        environment={
-            "env_provider": "rlab",
-            "game": "Bandit-v0",
-            "task": {"termination": {"max_episode_steps": 50}},
-        },
-        episodes=2,
-        n_envs=1,
-        max_steps=50,
-        seed=10_000,
-        seed_protocol=SEED_PROTOCOL,
-        acceptance=[
-            {
-                "metric": "eval/full/outcome/success/rate/min",
-                "operator": ">=",
-                "threshold": 1.0,
-            }
-        ],
-    )
-
-    payload = checkpoint_announcement_eval_payload(
-        {"checkpoint_eval_contract": acceptance}
-    )
-
-    assert payload == acceptance
-    assert stable_hash(payload) == "a0b7c60a0ab10ff967967f0845cdefa8d54e0540b1f083afaeb1d66291559b30"

@@ -8,10 +8,9 @@ import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
-from rlab.modal_eval_storage import ObjectNotFound, ObjectStore, file_sha256, object_store_base_uri
-from rlab.modal_eval_storage import write_downloaded_file
+from rlab.file_utils import file_sha256
 
 
 ROM_ASSET_SCHEMA_VERSION = 2
@@ -41,16 +40,9 @@ def rom_asset_state_path(repo_root: Path | None = None) -> Path:
     override = os.environ.get("RLAB_ROM_ASSET_STATE")
     if override:
         return Path(override).expanduser()
-    root = Path(__file__).resolve().parents[2] if repo_root is None else repo_root
-    return root / "logs" / "fleet" / "rom-assets.json"
-
-
-def legacy_rom_asset_state_path(repo_root: Path | None = None) -> Path:
-    override = os.environ.get("RLAB_MODAL_EVAL_ASSET_STATE")
-    if override:
-        return Path(override).expanduser()
-    root = Path(__file__).resolve().parents[2] if repo_root is None else repo_root
-    return root / "logs" / "fleet" / "modal-eval-assets.json"
+    if repo_root is not None:
+        return repo_root / ".rlab" / "rom-assets.json"
+    return Path("~/.config/rlab/rom-assets.json").expanduser()
 
 
 def _read_state(path: Path) -> dict[str, Any]:
@@ -64,10 +56,7 @@ def _read_state(path: Path) -> dict[str, Any]:
 
 def load_rom_asset_state(path: Path | None = None) -> dict[str, Any]:
     target = rom_asset_state_path() if path is None else path
-    state = _read_state(target)
-    if state.get("games") or target.is_file():
-        return state
-    return _read_state(legacy_rom_asset_state_path(target.parents[2]))
+    return _read_state(target)
 
 
 def write_rom_asset_state(value: Mapping[str, Any], path: Path | None = None) -> Path:
@@ -106,18 +95,16 @@ def validate_rom_asset_manifest(
     *,
     expected_game: str | None = None,
     require_object_uri: bool = True,
-    allow_legacy: bool = False,
 ) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError("ROM asset manifest must be an object")
     manifest = dict(value)
-    version = int(manifest.get("schema_version") or 1)
-    if version != ROM_ASSET_SCHEMA_VERSION and not (allow_legacy and version == 1):
+    version = int(manifest.get("schema_version") or 0)
+    if version != ROM_ASSET_SCHEMA_VERSION:
         raise ValueError(f"unsupported ROM asset manifest schema_version: {version}")
-    if version == ROM_ASSET_SCHEMA_VERSION:
-        unknown = sorted(set(manifest) - _MANIFEST_FIELDS)
-        if unknown:
-            raise ValueError(f"unknown ROM asset manifest field(s): {', '.join(unknown)}")
+    unknown = sorted(set(manifest) - _MANIFEST_FIELDS)
+    if unknown:
+        raise ValueError(f"unknown ROM asset manifest field(s): {', '.join(unknown)}")
     game = _safe_game(manifest.get("game"))
     if expected_game is not None and game != _safe_game(expected_game):
         raise ValueError(f"ROM asset game mismatch: expected {expected_game!r}, got {game!r}")
@@ -134,12 +121,9 @@ def validate_rom_asset_manifest(
     if algorithm != ROM_ASSET_IDENTITY_ALGORITHM:
         raise ValueError(f"unsupported provider ROM identity algorithm: {algorithm}")
     size_value = manifest.get("size_bytes")
-    if size_value is None and allow_legacy and version == 1:
-        size_bytes = None
-    else:
-        if isinstance(size_value, bool) or not isinstance(size_value, int) or size_value < 1:
-            raise ValueError("ROM asset size_bytes must be a positive integer")
-        size_bytes = int(size_value)
+    if isinstance(size_value, bool) or not isinstance(size_value, int) or size_value < 1:
+        raise ValueError("ROM asset size_bytes must be a positive integer")
+    size_bytes = int(size_value)
     object_uri = str(manifest.get("object_uri") or "").strip()
     if require_object_uri:
         parsed = urlparse(object_uri)
@@ -155,8 +139,7 @@ def validate_rom_asset_manifest(
         "provider_rom_identity": provider_identity,
         "provider_rom_identity_algorithm": algorithm,
     }
-    if size_bytes is not None:
-        normalized["size_bytes"] = size_bytes
+    normalized["size_bytes"] = size_bytes
     if object_uri:
         normalized["object_uri"] = object_uri
     return normalized
@@ -166,7 +149,6 @@ def portable_rom_asset_identity(value: Mapping[str, Any]) -> dict[str, Any]:
     manifest = validate_rom_asset_manifest(
         value,
         require_object_uri=False,
-        allow_legacy=True,
     )
     return {
         "schema_version": ROM_ASSET_SCHEMA_VERSION,
@@ -177,8 +159,8 @@ def portable_rom_asset_identity(value: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def rom_asset_manifests_equal(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
-    left_manifest = validate_rom_asset_manifest(left, allow_legacy=True)
-    right_manifest = validate_rom_asset_manifest(right, allow_legacy=True)
+    left_manifest = validate_rom_asset_manifest(left)
+    right_manifest = validate_rom_asset_manifest(right)
     return (
         left_manifest["game"] == right_manifest["game"]
         and portable_rom_asset_identity(left_manifest) == portable_rom_asset_identity(right_manifest)
@@ -191,20 +173,13 @@ def manifest_from_train_config(
     expected_game: str | None = None,
 ) -> dict[str, Any] | None:
     current = train_config.get("rom_asset_manifest")
-    legacy = train_config.get("checkpoint_eval_asset_manifest")
     if current is not None and not isinstance(current, Mapping):
         raise ValueError("rom_asset_manifest must be an object or null")
-    if legacy is not None and not isinstance(legacy, Mapping):
-        raise ValueError("checkpoint_eval_asset_manifest must be an object or null")
-    if current is not None and legacy is not None and not rom_asset_manifests_equal(current, legacy):
-        raise ValueError("ROM asset manifest conflicts with checkpoint_eval_asset_manifest")
-    selected = current if isinstance(current, Mapping) else legacy
-    if selected is None:
+    if current is None:
         return None
     return validate_rom_asset_manifest(
-        selected,
+        current,
         expected_game=expected_game,
-        allow_legacy=True,
     )
 
 
@@ -229,7 +204,6 @@ def verify_rom_file(path: Path, manifest: Mapping[str, Any]) -> Path:
     normalized = validate_rom_asset_manifest(
         manifest,
         require_object_uri=False,
-        allow_legacy=True,
     )
     if not path.is_file():
         raise FileNotFoundError(f"ROM cache file is missing: {path}")
@@ -249,7 +223,6 @@ def cache_path(cache_root: Path, manifest: Mapping[str, Any]) -> Path:
     normalized = validate_rom_asset_manifest(
         manifest,
         require_object_uri=False,
-        allow_legacy=True,
     )
     return (
         cache_root.expanduser()
@@ -273,7 +246,6 @@ def install_rom_file(source: Path, manifest: Mapping[str, Any], cache_root: Path
     normalized = validate_rom_asset_manifest(
         manifest,
         require_object_uri=False,
-        allow_legacy=True,
     )
     verify_rom_file(source, normalized)
     destination = cache_path(cache_root, normalized)
@@ -312,51 +284,20 @@ def ensure_rom_cache(
     manifest: Mapping[str, Any],
     *,
     cache_root: Path = DEFAULT_LOCAL_ROM_CACHE,
-    store: ObjectStore | None = None,
 ) -> Path:
-    normalized = validate_rom_asset_manifest(manifest, allow_legacy=True)
+    normalized = validate_rom_asset_manifest(manifest)
     destination = cache_path(cache_root, normalized)
     try:
         return verify_rom_file(destination, normalized)
     except (FileNotFoundError, ValueError):
         pass
-    object_store = store or ObjectStore(object_store_base_uri())
-    payload = object_store.get_bytes(str(normalized["object_uri"]))
-    with tempfile.NamedTemporaryFile(
-        prefix="rlab-rom-download-",
-        suffix=Path(normalized["filename"]).suffix,
-        delete=False,
-    ) as handle:
-        handle.write(payload)
-        source = Path(handle.name)
-    try:
-        return install_rom_file(source, normalized, cache_root)
-    finally:
-        source.unlink(missing_ok=True)
-
-
-def stage_rom_from_url(
-    manifest: Mapping[str, Any],
-    *,
-    url: str,
-    cache_root: Path,
-) -> Path:
-    normalized = validate_rom_asset_manifest(
-        manifest,
-        require_object_uri=False,
-        allow_legacy=True,
-    )
-    destination = cache_path(cache_root, normalized)
-    try:
-        return verify_rom_file(destination, normalized)
-    except (FileNotFoundError, ValueError):
-        pass
-    with tempfile.TemporaryDirectory(prefix="rlab-rom-stage-") as temporary:
-        source = write_downloaded_file(
-            url,
-            Path(temporary) / normalized["filename"],
+    parsed = urlparse(str(normalized["object_uri"]))
+    if parsed.scheme != "file":
+        raise FileNotFoundError(
+            "ROM is not present in the local cache; import it locally or pass --rom-path "
+            "when launching the dstack run"
         )
-        return install_rom_file(source, normalized, cache_root)
+    return install_rom_file(Path(unquote(parsed.path)), normalized, cache_root)
 
 
 def _expected_provider_identities(game: str) -> set[str]:
@@ -413,20 +354,6 @@ def discover_rom_path(
     return next(iter(matches.values()))[0]
 
 
-def _object_key(manifest: Mapping[str, Any]) -> str:
-    return (
-        f"{ROM_ASSET_PREFIX}/objects/sha256/{manifest['sha256']}/{manifest['filename']}"
-    )
-
-
-def _revision_key(manifest: Mapping[str, Any]) -> str:
-    return f"{ROM_ASSET_PREFIX}/manifests/{manifest['game']}/{manifest['sha256']}.json"
-
-
-def _pointer_key(game: str) -> str:
-    return f"{ROM_ASSET_PREFIX}/games/{_safe_game(game)}.json"
-
-
 def _cache_manifest_locally(manifest: Mapping[str, Any]) -> None:
     state = load_rom_asset_state()
     state["schema_version"] = ROM_ASSET_STATE_SCHEMA_VERSION
@@ -436,25 +363,16 @@ def _cache_manifest_locally(manifest: Mapping[str, Any]) -> None:
 
 def rom_asset_manifest_for_game(
     game: str,
-    *,
-    store: ObjectStore | None = None,
 ) -> dict[str, Any]:
     game = _safe_game(game)
-    object_store = store or ObjectStore(object_store_base_uri())
-    try:
-        pointer = object_store.get_json(_pointer_key(game))
-    except ObjectNotFound as exc:
+    value = load_rom_asset_state().get("games", {}).get(game)
+    if not isinstance(value, Mapping):
         raise ValueError(
-            f"ROM asset for {game!r} is not provisioned; run: rlab rom sync --game {game}"
-        ) from exc
-    manifest = validate_rom_asset_manifest(pointer, expected_game=game)
-    head = object_store.head(str(manifest["object_uri"]))
-    if int(head["size"]) != int(manifest["size_bytes"]):
-        raise ValueError(f"ROM asset object size mismatch for {game}")
-    remote_sha = str(head.get("metadata", {}).get("sha256") or "")
-    if object_store.scheme == "s3" and remote_sha != manifest["sha256"]:
-        raise ValueError(f"ROM asset object hash metadata mismatch for {game}")
-    _cache_manifest_locally(manifest)
+            f"ROM asset for {game!r} is not registered locally; "
+            f"run: rlab rom sync --game {game}"
+        )
+    manifest = validate_rom_asset_manifest(value, expected_game=game)
+    verify_rom_file(cache_path(DEFAULT_LOCAL_ROM_CACHE, manifest), manifest)
     return manifest
 
 
@@ -464,51 +382,42 @@ def sync_rom_asset(
     rom_path: Path | None = None,
     source_dir: Path = Path("~/roms"),
     replace: bool = False,
-    store: ObjectStore | None = None,
     local_cache_root: Path = DEFAULT_LOCAL_ROM_CACHE,
 ) -> dict[str, Any]:
     game = _safe_game(game)
     source = discover_rom_path(game, rom_path=rom_path, source_dir=source_dir)
     sha256 = file_sha256(source)
-    object_store = store or ObjectStore(object_store_base_uri())
+    destination = install_rom_file(
+        source,
+        {
+            "schema_version": ROM_ASSET_SCHEMA_VERSION,
+            "game": game,
+            "filename": source.name,
+            "size_bytes": source.stat().st_size,
+            "sha256": sha256,
+            "object_uri": source.resolve().as_uri(),
+            "provider_rom_identity": provider_rom_identity(source),
+            "provider_rom_identity_algorithm": ROM_ASSET_IDENTITY_ALGORITHM,
+        },
+        local_cache_root,
+    )
     manifest: dict[str, Any] = {
         "schema_version": ROM_ASSET_SCHEMA_VERSION,
         "game": game,
         "filename": source.name,
         "size_bytes": source.stat().st_size,
         "sha256": sha256,
-        "object_uri": object_store.uri(
-            f"{ROM_ASSET_PREFIX}/objects/sha256/{sha256}/{source.name}"
-        ),
+        "object_uri": destination.resolve().as_uri(),
         "provider_rom_identity": provider_rom_identity(source),
         "provider_rom_identity_algorithm": ROM_ASSET_IDENTITY_ALGORITHM,
     }
     manifest = validate_rom_asset_manifest(manifest, expected_game=game)
-    object_store.put_file(
-        _object_key(manifest),
-        source,
-        sha256=sha256,
-        content_type="application/octet-stream",
-    )
-    object_store.put_json(_revision_key(manifest), manifest, create_only=True)
-    pointer_key = _pointer_key(game)
-    current = object_store.get_json_optional(pointer_key)
-    if current is None:
-        object_store.put_json_conditional(pointer_key, manifest, if_none_match=True)
-    else:
-        current_manifest = validate_rom_asset_manifest(current, expected_game=game)
-        if rom_asset_manifests_equal(current_manifest, manifest):
-            manifest = current_manifest
-        elif not replace:
+    current = load_rom_asset_state().get("games", {}).get(game)
+    if isinstance(current, Mapping) and not rom_asset_manifests_equal(current, manifest):
+        if not replace:
             raise ValueError(
-                f"ROM asset for {game} is already pinned to {current_manifest['sha256']}; "
+                f"ROM asset for {game} is already pinned to {current['sha256']}; "
                 "pass --replace to change it"
             )
-        else:
-            etag = str(object_store.head(pointer_key).get("etag") or "")
-            if not etag:
-                raise RuntimeError(f"ROM asset pointer for {game} has no ETag")
-            object_store.put_json_conditional(pointer_key, manifest, if_match=etag)
-    install_rom_file(source, manifest, local_cache_root)
     _cache_manifest_locally(manifest)
     return manifest

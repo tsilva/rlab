@@ -11,7 +11,7 @@ from typing import Any
 from rlab.config_loader import (
     YAML_EXTENSIONS,
     ComposedDocument,
-    QUEUE_TEMPLATE_FIELDS,
+    RECIPE_TEMPLATE_FIELDS,
     TEMPLATE_VARS_KEY,
     apply_dotlist_overrides,
     deep_merge,
@@ -69,8 +69,8 @@ SOURCE_RECIPE_FIELDS = frozenset(
 )
 SOURCE_PRESET_FIELDS = frozenset({"defaults", "logging", TEMPLATE_VARS_KEY, "train"})
 RECIPE_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
-    ("description",): QUEUE_TEMPLATE_FIELDS,
-    ("goal", "description"): QUEUE_TEMPLATE_FIELDS,
+    ("description",): RECIPE_TEMPLATE_FIELDS,
+    ("goal", "description"): RECIPE_TEMPLATE_FIELDS,
     ("goal", "tags", "2"): frozenset({"env_id"}),
 }
 GOAL_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
@@ -450,7 +450,6 @@ def materialize_train_recipe_document(
             train_config["checkpoint_eval_backend"] = "none"
             train_config["early_stop"] = None
             train_config["checkpoint_eval_stages"] = []
-            train_config.pop("checkpoint_eval_asset_manifest", None)
     if train_config:
         materialized["train_config"] = train_config
     return materialized
@@ -688,6 +687,25 @@ def compose_train_document(
         label=f"{label} train_config",
     )
     return document
+
+
+def prepare_checkpoint_eval_mode(
+    document: dict[str, Any],
+    *,
+    checkpoint_eval_backend: str,
+) -> None:
+    """Materialize the execution mode before recipe validation and hashing."""
+
+    mode = str(checkpoint_eval_backend).strip()
+    if mode not in {"modal", "none"}:
+        raise ValueError(f"unsupported checkpoint eval backend: {mode}")
+    config = dict(document["train_config"])
+    config["checkpoint_eval_backend"] = mode
+    if mode == "none":
+        config["early_stop"] = None
+        config["checkpoint_eval_stages"] = []
+        config["stop_on_acceptance"] = False
+    document["train_config"] = config
 
 
 def _git_text(args: Sequence[str], *, cwd: Path = Path(".")) -> str | None:

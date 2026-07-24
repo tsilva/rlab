@@ -46,7 +46,7 @@ reward_shapes:
       completion_reward: 0.0
       score_progress_clipped: false
 train:
-  # Run queue-backed checkpoint evaluation outside the training machine on Modal.
+  # Run checkpoint evaluation outside the training machine on Modal.
   checkpoint_eval_backend: modal
   checkpoint_freq: 250000
   stop_on_acceptance: true

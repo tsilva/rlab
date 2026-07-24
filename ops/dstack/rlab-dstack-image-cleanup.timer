@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodically prune unused rlab dstack training images
+
+[Timer]
+OnBootSec=15m
+OnUnitActiveSec=30m
+RandomizedDelaySec=5m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+

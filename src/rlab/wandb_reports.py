@@ -108,7 +108,7 @@ ACTIVE_COLUMNS = [
     "config:goal_slug.value",
     "config:recipe_slug.value",
     "config:campaign_id.value",
-    "config:batch_id.value",
+    "config:attempt_id.value",
     "config:seed.value",
     "config:algorithm_id.value",
     f"summary:{EVAL_ACCEPTANCE_PASS}",

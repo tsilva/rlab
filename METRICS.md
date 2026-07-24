@@ -6,13 +6,17 @@ exact registry entry or a bounded template.
 
 ## Surfaces and dimensions
 
-- W&B history contains searchable scalar time series and one `eval/full/by_start` table.
-- Metric producers write to a local SQLite outbox, then deliver gzip batches to PostgreSQL. Every
-  canonical frame remains exact in PostgreSQL and immutable dual-R2 archives; operational outbox
-  cleanup is governed by archive receipts and exact integrity, never by W&B visibility.
-- Fleet is the sole W&B writer for new `neon_mailbox_v1` runs. Training and evaluation workers never
-  receive W&B credentials. One advisory-locked actor owns history, summaries, and artifact
-  association for each run; source consumption cursors are durable PostgreSQL state.
+- W&B is the authoritative scientific metric surface. One supervisor process inside the training
+  container is the only process allowed to open and write the logical W&B run.
+- The learner writes structured events only to its embedded SQLite WAL outbox. It performs no
+  network I/O for metrics, checkpoint publication, or evaluation dispatch.
+- Modal never receives W&B credentials. The supervisor validates Modal results and appends their
+  metrics to the same W&B run.
+- SQLite and private-R2 JSONL metric segments are delivery and recovery transports, not competing
+  scientific metric stores. Verified terminal journals expire after seven days.
+- Public model R2 contains immutable checkpoint closures and a mutable no-cache run index. Private
+  eval R2 contains intents, results, and episode evidence. Private control R2 contains leases,
+  journals, promotions, and terminal receipts.
 - W&B config contains run-defining dimensions: `metrics_schema_version: 6`, `training_backend_id`,
   `training_backend_config_hash`, `algorithm_id`, goal,
   environment, starts, seed, frame skip, environment count, hyperparameters, eval protocol, and
@@ -24,10 +28,10 @@ exact registry entry or a bounded template.
   `reward_program_revision`, `reward_shape`, `reward_shape_sha256`, and
   `reward_shape_is_default`. Reward-derived returns are comparable only when the selected reward
   semantic identity and effective goal contract match; the readable key alone is not sufficient.
-- `leader/checkpoint/*` contains the selected checkpoint's rank values and provenance.
-- PostgreSQL plus immutable dual-R2 archives are the permanent exact metric history. W&B is a
-  deterministic, sampled diagnostic projection. R2 also stores checkpoints, metadata, raw episode
-  evidence, and videos.
+- `leader/checkpoint/*` contains diagnostic projections of the selected checkpoint. The
+  create-only private-R2 `PromotionReceipt` is the authoritative selection.
+- Heavy model bytes, videos, replays, episode rows, diagnostics, and recovery payloads never go to
+  W&B.
 
 The active checkpoint protocol is `acceptance`; complete accepted evidence additionally emits the
 `full` metric family. Historical `screen` and `confirm` rows remain readable but are not produced by
@@ -46,15 +50,18 @@ is intentionally not emitted; `train/curriculum/snapshot/feedback/trajectory/cou
 many such trajectory updates were committed.
 
 An episode metric is a **return**. `reward` is reserved for per-step shaping and component
-attribution. `global_step` counts policy environment transitions; frame skip remains run config.
-Fleet supplies W&B's internal `_step` only as the projection generation's deterministic output
-ordinal. It is not an environment-transition or checkpoint count. `global_step` is the declared W&B
-step metric for scientific `train/*` and `eval/*` charts. Asynchronous evaluation rows may arrive
-after later training rows without changing their scientific X-axis.
+attribution. Frame skip remains run config. W&B uses three explicit axes:
 
-Schemas v4 and v5 are frozen compatibility states. Their removed metrics, historical staged-evaluation
-families, parsing, and projections remain accepted when a run declares the corresponding
-`metrics_schema_version`. Existing W&B history is never rewritten. Newly materialized runs declare v6.
+- `train/global_step`: policy environment transitions consumed by training.
+- `eval/checkpoint_step`: step of the checkpoint represented by an evaluation row.
+- `orchestration/event_seq`: durable supervisor delivery order.
+
+Asynchronous evaluations may arrive after later training rows without changing their scientific
+X-axis. The compatibility `global_step` field may remain in payloads while surviving producers are
+migrated, but new charts and orchestration logic use the three names above.
+
+Purged PostgreSQL/Fleet/W&B/R2 state has no compatibility guarantee. Newly materialized runs declare
+schema v6.
 
 ## Research interpretation
 
@@ -102,74 +109,43 @@ evaluation. W&B history always receives `global_step`, pass, planned/completed e
 acceptance duration. It receives no partial `eval/full/*` result. Accepted projections additionally
 include variable return, length, progress, episode count, artifact, source, and `eval/full/by_start`.
 Constant acceptance success rates, per-start success scalars, failure-reason scalars, duplicate full
-duration, and constant leader-success fields remain in database/R2 evidence but are suppressed from
+duration, and constant leader-success fields remain in private-R2 evidence but are suppressed from
 acceptance W&B history.
 
 `eval/acceptance/pass` is per-checkpoint history. W&B summarizes that history with `max`, so the
 summary means that some checkpoint passed; it is not the run verdict. The authoritative verdict is
-the database promotion record (`eval_runs.outcome`, `promoted_eval_job_id`, and `promotion_json`).
-At terminal publication, that record restamps `rlab/goal/outcome`, the diagnostic
+the create-only private-R2 `PromotionReceipt`, whose selected result is hash-bound to the complete
+acceptance evidence. At terminal publication, that receipt restamps `rlab/goal/outcome`, the diagnostic
 `leader/checkpoint/*` fields, and the accepted W&B projection. Later rejected checkpoint projections
 remain in history and never modify the active projection. Raw acceptance aggregates and episode
-evidence remain authoritative in indexed exact evidence and immutable archives.
+evidence remain authoritative in private eval R2.
 
-## Canonical telemetry v2 and integrity
+## Delivery, backpressure, and recovery
 
-W&B is an append-only, at-least-once diagnostic projection. It is not a metric ledger, evaluation
-authority, promotion input, ranking input, cohort manifest, or cleanup receipt. A visible W&B point
-is identified by `_rlab_event_id`, `_rlab_output_index`, `_rlab_output_ordinal`,
-`_rlab_payload_sha256`, `_rlab_predecessor_sha256`, `_rlab_adapter_version`,
-`_rlab_normalization_version`, and `_rlab_projection_generation`. These are projection metadata,
-not scientific metrics. W&B `_step` is the generation offset plus the zero-based output ordinal;
-`global_step` retains its scientific meaning as policy transitions consumed.
-The v2 projector defines `global_step` as the W&B step metric for `train/*` and `eval/*`, so
-automatically generated scientific charts use policy transitions on the X-axis even though the
-append-only projection continues to use `_step` internally for ordering.
-For a canonical metric batch with more than one history frame, normalization v3 projects only the
-latest frame. All original frames remain in the exact Postgres/R2 telemetry ledger; only the
-diagnostic W&B projection is downsampled.
-An empty or non-history-only canonical metric batch emits no W&B history row. Its per-producer
-source cursor still advances atomically, so a zero-output event cannot wedge later metrics.
+Every event has a stable content-derived event ID. Delivery to W&B is at least once; the durable
+`orchestration/event_seq` is also W&B's internal step, so replay after an interrupted local
+acknowledgement cannot append a second scientific point. Reports and summary projection retain the
+event ID for explicit deduplication. Promotion, terminal state, and early-stop authority are exactly
+once through conditional private-R2 receipts.
 
-The bounded projector consumes at most 64 source events per pass, retains at most 256 unverified
-rows, claims at most 32 rows, and enqueues at no more than five rows per second per run. Verification
-reads only the next 256-row unresolved suffix and advances an incremental watermark; verified
-history is never rescanned. W&B freshness warns at 45 seconds, violates its SLO at 60 seconds, and
-terminal drain must finish within 300 seconds for admitted healthy runs.
+The supervisor seals immutable metric-journal segments to private R2 every five seconds or 1,000
+events and batches pending frames to W&B. A retry reconstructs its local SQLite state from those
+segments before producing new events. It resumes the same W&B run with `resume="must"`.
 
-The canonical identity of every metric, control, command ACK, evaluation result, and terminal close
-is `(train_job_id, telemetry_generation, producer_ordinal, source_sequence)`. The authoritative
-archive is deterministic UTF-8 JSONL compressed with deterministic gzip. Its segment SHA-256 covers
-the uncompressed JSONL bytes; an additional SHA-256 covers the compressed object. Metric values use
-the closed `telemetry-adapters-v1` registry. Finite floats are encoded by their exact hexadecimal
-binary64 representation. Unknown types, unsafe rich values, mutable media references, and
-non-finite floats are integrity incidents rather than silently coerced values.
+Backpressure is sampled every 15 seconds. The supervisor reports queue depth, oldest unpublished
+age, ingress and publish rates, observed publication-capacity ratio, local/R2/W&B high-water marks,
+remote-visible W&B lag, checkpoint backlog, pending evals, scratch utilization, accepted-result to
+stop latency, and post-learner idle-GPU tail. Publication capacity is healthy only when measured
+publish capacity is at least twice peak ingress.
 
-`telemetry_integrity-v1` is the single status record used by status, cleanup, evidence
-materialization, and scientific consumers. Its fields mean:
+Unpublished W&B age warns at 45 seconds and is unhealthy at 60 seconds. Terminal W&B drain has a
+300-second deadline. If neither W&B nor private R2 can preserve pending metrics, or task scratch
+usage reaches 80%, the supervisor requests a safe learner stop and emits a resumable failure rather
+than discarding evidence.
 
-- `classification`: `intact_with_proof`, `degraded`, `legacy_unknown`, or `pending`. Only the first
-  may support exact v2 facts. A v1 run is never classified intact from cursor values or absence of
-  retained batches.
-- `disposition`: `exact`, `legacy_loss_adjudicated`, `durability_opted_out`, or `pending`.
-- `exact`: expected and realized obligations are identical and terminal, all producer final claims
-  match contiguous archive coverage, the producer set is fenced, policy-required receipts exist,
-  recovery is complete, and no canonical integrity incident is open.
-- `cleanup_eligible`: stronger than `exact`; exact runs additionally require finalized
-  `run_final_exact` facts and a terminal W&B disposition. Legacy loss adjudication requires dual
-  archives of every surviving byte, a permanent incident, and the retention delay.
-- `expected_set_sha256`, `coverage_sha256`, `archive_root_sha256`, and `facts_sha256`: content
-  identities for the obligation set, producer coverage, immutable run root, and final facts.
-- `state_json`: fence state, archive policy and receipts, recovery/executor health, evidence
-  freshness, cohort comparability, W&B generation health, and cleanup reasons.
-
-The authoritative evidence interfaces are `eval_scope_exact`,
-`training_success_scope_exact`, and `run_final_exact`. Contract-key equality is exact; evaluation
-contracts include stochastic action sampling, provider/environment arguments, preprocessing,
-reward and event semantics, starts, termination, runtime/dependencies/evaluator/assets, immutable
-checkpoint receipts, the full episode manifest, and complete results. Cohort rankings require the
-complete expected seed manifest and the declared `rank_direction` and tie-breaks. W&B summaries,
-database job status alone, object-store listing scans, and retained-batch absence fail closed.
+A logical run succeeds only when its private-R2 `TerminalReceipt` proves complete checkpoint and
+evaluation inventories, a promotion, the W&B high-water mark, and a complete drain. dstack process
+exit alone is never scientific success.
 
 ## Registry
 
@@ -237,7 +213,7 @@ database job status alone, object-store listing scans, and retained-batch absenc
 | `train/throughput/rollout_overhead_seconds` | Rollout wall time outside native-provider step calls, including policy inference and wrapper, buffer, reset, task, and callback work. | seconds | rollout | history |
 | `train/throughput/between_rollouts_seconds` | Wall time after rollout collection and before the next rollout, including optimizer updates, callbacks, and logging. | seconds | rollout | history |
 | `train/artifact/save/seconds` | Local model save duration. | seconds | artifact | history |
-| `train/artifact/upload/seconds` | External storage and W&B artifact publication duration. | seconds | artifact | history |
+| `train/artifact/upload/seconds` | Public R2 checkpoint publication duration. | seconds | artifact | history |
 | `eval/{protocol}/episode/return/mean` | Evaluation episode-return distribution. | return | evaluation | history |
 | `eval/{protocol}/episode/return/std` | Evaluation episode-return distribution. | return | evaluation | history |
 | `eval/{protocol}/episode/return/median` | Evaluation episode-return distribution. | return | evaluation | history |
@@ -270,6 +246,25 @@ database job status alone, object-store listing scans, and retained-batch absenc
 | `leader/checkpoint/artifact_ref` | Diagnostic immutable artifact reference projection. | summary | selection | summary |
 | `leader/checkpoint/eval_source` | Diagnostic evaluation-source projection. | summary | selection | summary |
 | `leader/checkpoint/updated_at` | Diagnostic projection update time. | summary | selection | summary |
+| `train/global_step` | Scientific training X-axis: policy environment transitions consumed. | steps | frame | history |
+| `eval/checkpoint_step` | Scientific evaluation X-axis: step of the evaluated checkpoint. | steps | evaluation | history |
+| `orchestration/event_seq` | Monotonic local outbox event sequence used as W&B delivery order. | events | frame | history |
+| `orchestration/event_id` | Stable content-derived identifier used to deduplicate at-least-once delivery. | metadata | frame | history |
+| `orchestration/outbox/queue_depth` | Metric outbox frames not yet acknowledged by the W&B SDK. | events | supervisor sample | history |
+| `orchestration/outbox/oldest_unpublished_seconds` | Age of the oldest metric frame not yet acknowledged by the W&B SDK. | seconds | supervisor sample | history |
+| `orchestration/outbox/ingress_rate` | Observed local metric-frame creation rate over the latest supervisor interval. | events/second | supervisor sample | history |
+| `orchestration/outbox/publish_rate` | Observed W&B SDK acknowledgment rate over the latest supervisor interval. | events/second | supervisor sample | history |
+| `orchestration/outbox/publication_capacity_ratio` | Observed W&B publication rate divided by observed metric ingress rate. | ratio | supervisor sample | history |
+| `orchestration/outbox/local_high_water` | Largest metric-frame sequence durably present in local SQLite. | events | supervisor sample | history |
+| `orchestration/outbox/r2_high_water` | Largest metric-frame sequence sealed in immutable private R2 journals. | events | supervisor sample | history |
+| `orchestration/outbox/wandb_high_water` | Largest metric-frame sequence acknowledged by the W&B SDK. | events | supervisor sample | history |
+| `orchestration/outbox/wandb_remote_high_water` | Largest orchestration event sequence observed through the W&B API. | events | remote visibility probe | history |
+| `orchestration/outbox/wandb_remote_visible_lag_seconds` | Age of the newest local metric event not yet observed through the W&B API. | seconds | remote visibility probe | history |
+| `orchestration/checkpoint/backlog` | Ready local checkpoints not yet verified in public model R2. | checkpoints | supervisor sample | history |
+| `orchestration/eval/pending` | Persisted evaluation intents without a terminal verified result. | evaluations | supervisor sample | history |
+| `orchestration/eval/result_to_stop_seconds` | Time from observing an accepted eval result to signaling the learner. | seconds | accepted evaluation | history |
+| `orchestration/drain/idle_gpu_tail_seconds` | Time the training container retained its GPU after the learner exited. | seconds | terminal drain | history |
+| `orchestration/scratch/used_fraction` | Fraction of the task scratch filesystem currently used. | fraction | supervisor sample | history |
 | `train/episode/return/shaped/from/target/mean` | Rolling mean shaped return over the latest 100 genuine target-origin training episodes. | return | rollout | history |
 | `train/curriculum/snapshot/archive/cell/count` | Current snapshot archive cell count. | cells | rollout | history |
 | `train/curriculum/snapshot/archive/snapshot/count` | Current resident snapshot handle count. | snapshots | rollout | history |

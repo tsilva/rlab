@@ -48,13 +48,19 @@ class GracefulStopHelper(CallbackHelper):
         self.logged = False
 
     def _on_step(self) -> bool:
+        # Returning False here would interrupt SB3 before the current transition
+        # is added to the rollout buffer. The supervisor may request a stop at
+        # any time, so acknowledge it here but let the on-policy rollout finish.
+        return True
+
+    def _on_rollout_end(self) -> None:
         if not self.stop_flag.requested:
-            return True
+            return
+        reason = self.stop_flag.reason or "graceful stop"
         if not self.logged:
-            reason = self.stop_flag.reason or "graceful stop"
             print(
-                f"graceful stop requested by {reason}; stopping at "
-                f"num_timesteps={self.num_timesteps}",
+                f"graceful stop requested by {reason}; completing the safe "
+                f"on-policy boundary at num_timesteps={self.num_timesteps}",
                 flush=True,
             )
             if self.marker_path is not None:
@@ -67,6 +73,7 @@ class GracefulStopHelper(CallbackHelper):
                             "reason": reason,
                             "num_timesteps": int(self.num_timesteps),
                             "pid": os.getpid(),
+                            "boundary": "on_policy_rollout_end",
                         },
                         sort_keys=True,
                     )
@@ -75,4 +82,6 @@ class GracefulStopHelper(CallbackHelper):
                 )
                 temporary.replace(self.marker_path)
             self.logged = True
-        return False
+        # SB3 performs the update for this completed rollout, then its learn
+        # loop observes that the requested total has been reached and exits.
+        self.model._total_timesteps = int(self.num_timesteps)

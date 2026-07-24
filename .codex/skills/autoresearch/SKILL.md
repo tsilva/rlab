@@ -1,12 +1,12 @@
 ---
 name: autoresearch
-description: Tune one checked-in rlab SB3 PPO or A2C recipe from durable training completion signals without launching checkpoint evaluations. Use when the user points to a recipe and asks to tune, optimize, autoresearch, improve sample efficiency, maximize training return, find the best hyperparameters, or make training behavior stable across seeds. Runs a bounded fixed-rung beast-3 search, confirms the winner on five untouched training seeds, and patches only the pointed leaf recipe.
+description: Tune one checked-in rlab SB3 PPO or A2C recipe from durable training completion signals without launching checkpoint evaluations. Use when the user points to a recipe and asks to tune, optimize, autoresearch, improve sample efficiency, maximize training return, find the best hyperparameters, or make training behavior stable across seeds. Runs a bounded fixed-rung B3 dstack search, confirms the winner on five untouched training seeds, and patches only the pointed leaf recipe.
 ---
 
 # Autoresearch
 
 Tune the pointed recipe with a training-only fixed-rung study. A direct invocation authorizes at
-most 48 reserved queue jobs on `beast-3`; it does not authorize infrastructure repair, capacity
+most 48 reserved dstack runs on B3; it does not authorize infrastructure repair, capacity
 changes, runtime builds or deployments, cancellation, commits, pushes, checkpoint promotion, or
 goal-acceptance claims.
 
@@ -20,11 +20,11 @@ Before acting:
 3. Read [search-policy.md](references/search-policy.md) completely.
 4. Use `$launch-experiment` in observe mode for every launch and monitor.
 
-Resolve exactly one checked-in goal and recipe. V2 accepts only `sb3.ppo` and `sb3.a2c` recipes
+Resolve exactly one checked-in goal and recipe. V3 accepts only `sb3.ppo` and `sb3.a2c` recipes
 with explicit training start states and distinct quantized 20%, 50%, and full training caps.
 It uses success evidence when the task declares success termination and return evidence when the
 goal ranks episode return but declares no success event.
-Historical schema-v1 studies are inert and cannot be resumed.
+Historical queue-backed schema-v1/v2 studies are inert and cannot be resumed.
 
 ## Initialize or resume
 
@@ -49,14 +49,14 @@ Obey the returned action. Never infer or skip a rung, evidence read, or barrier.
 
 ## Read capacity and reserve
 
-Before every reservation, read without mutating capacity:
+Before every reservation, read dstack without mutating capacity:
 
 ```bash
-rlab experiment status --machine beast-3 --json
+dstack ps --json
 ```
 
-Pass `capacity.effective_capacity` and `capacity.active_reservations` to the requested command.
-Wait when no slot is available.
+B3 has one training slot. Pass `1` as `effective_capacity` and the count of active B3 training
+tasks (zero or one) as `active_reservations`. Wait when the slot is occupied.
 
 Baseline screen and pair:
 
@@ -101,15 +101,18 @@ Reservations are durable. Search always retains five of the 48 jobs for at least
 
 ## Reconcile, launch, and monitor
 
-Before executing each generated command, inspect its deterministic batch:
+Each wave returns one command per seed. Before launching, inspect `dstack ps -a --json` and the
+study state for an already-recorded immutable run with the same submission key and seed.
 
 ```bash
-rlab experiment status --batch <batch-id> --json
+dstack ps -a --json
 ```
 
-- Record an exact existing cohort.
-- Execute the generated command once only when the batch has zero rows.
-- Pause on partial or mismatched rows; never fill, replace, or retry them ad hoc.
+- Record exact existing runs when every seed is present.
+- Execute a generated seed command once only when that seed has no matching run.
+- Pause on ambiguous, duplicate, partial, or mismatched runs; never replace or retry them ad hoc.
+
+Combine each launch command’s JSON output as `{"runs":[...]}` before recording the wave:
 
 ```bash
 uv run python .codex/skills/autoresearch/scripts/study.py record-launch \
@@ -117,14 +120,16 @@ uv run python .codex/skills/autoresearch/scripts/study.py record-launch \
 ```
 
 Every generated launch forces `--checkpoint-eval-backend none`, applies only the rung-specific
-`train.timesteps` and candidate overrides, and retains `--from-head`, `--existing-runtime-only`,
-fixed seeds, deterministic request identity, W&B, checkpoint publication, and runtime guards. The
-baseline captures the exact runtime image/input/build-source triplet; later waves pin it. No Modal
-readiness is required and no runtime build or deployment is allowed.
+`train.timesteps` and candidate overrides, and retains exact committed source,
+`--existing-runtime-only`, fixed seeds, deterministic submission identity, W&B, checkpoint
+publication, and runtime reconciliation. The baseline captures the exact runtime
+image/input/build-source triplet; later waves must match it. No Modal credentials, readiness,
+runtime build, or deployment is allowed.
 
-Launch independent returned commands concurrently. Start exactly one persistent
-`rlab experiment follow --run <id> --jsonl` monitor per run under `$launch-experiment`. Stay
-attached through every terminal event and investigator result. Report W&B URLs immediately.
+Because B3 has one slot, launch returned seed commands as capacity becomes available. Start exactly
+one persistent `rlab experiment follow --run <id>` monitor per run under `$launch-experiment`.
+Stay attached through the attempt terminal, dstack release, and investigator result. Report W&B
+URLs immediately.
 
 - Record `potential_bug` or `attention_required` and pause later waves.
 - Do not repair, retry, cancel, restart, or mutate infrastructure.

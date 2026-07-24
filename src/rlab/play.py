@@ -53,6 +53,8 @@ from rlab.eval_metrics import (
 from rlab.rom_assets import rom_asset_manifest_for_game
 from rlab.rom_runtime import ensure_local_rom_binding
 from rlab.model_sources import (
+    DEFAULT_PUBLIC_MODELS_BASE_URL,
+    download_public_run_source,
     model_source_ref,
     positional_model_source_arg,
     resolve_single_model_source,
@@ -89,7 +91,6 @@ from rlab.policy_observation import (
 )
 from rlab.seeds import DEFAULT_EVAL_SEED, EVAL_SEED_START, validate_eval_seed
 from rlab.targets import target_for_game
-from rlab.wandb_utils import default_wandb_project_path
 
 
 ANSI_RESET = "\033[0m"
@@ -390,9 +391,8 @@ def add_play_source_args(parser: argparse.ArgumentParser) -> None:
         nargs="?",
         type=positional_model_source_arg,
         help=(
-            "Model source: W&B run name or URL, full W&B artifact ref, Hugging Face "
-            "model ref, or use --model for a local checkpoint. A W&B run resolves "
-            "the confirmed promotion, then its newest confirmed checkpoint/final model."
+            "Immutable public checkpoint manifest or Hugging Face model ref. "
+            "Use --model for a local checkpoint or --run for an rlab public run."
         ),
     )
     parser.add_argument(
@@ -400,13 +400,24 @@ def add_play_source_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Local rlab policy path. The artifact must have a .metadata.json sidecar.",
     )
+    parser.add_argument(
+        "--run",
+        help=(
+            "Immutable rlab run ID. Resolves its public promoted checkpoint without "
+            "W&B or private R2 credentials."
+        ),
+    )
+    parser.add_argument(
+        "--public-models-base-url",
+        default=DEFAULT_PUBLIC_MODELS_BASE_URL,
+        help="Public models bucket URL. Defaults to rlab's checked-in public endpoint.",
+    )
+    parser.add_argument(
+        "--public-model-root",
+        default="runs/public_models",
+        help="Local cache for public run checkpoints.",
+    )
     parser.set_defaults(
-        artifact=None,
-        artifact_run=None,
-        artifact_project=default_wandb_project_path(),
-        artifact_kind="checkpoint",
-        artifact_version="latest",
-        artifact_root="runs/wandb_artifacts",
         hf_file=None,
         hf_revision=None,
         hf_model_root="runs/hf_models",
@@ -437,7 +448,7 @@ def attribution_opacity_arg(value: str) -> float:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="rlab play",
-        description="Run and inspect an rlab policy artifact in the interactive player dashboard",
+        description="Run and inspect an rlab policy in the interactive player dashboard",
     )
     add_play_source_args(parser)
     parser.add_argument(
@@ -1496,26 +1507,44 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     argv_list = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(argv_list)
-    if args.artifact_ref is None and not args.model:
-        parser.error(
-            "a model source is required; pass a W&B run/artifact, an hf:// model ref, "
-            "or --model /path/to/checkpoint.zip"
+    selected_sources = sum(
+        bool(value)
+        for value in (
+            args.artifact_ref,
+            args.model,
+            args.run,
         )
+    )
+    if selected_sources == 0:
+        parser.error(
+            "a model source is required; pass --run, an immutable manifest, an hf:// "
+            "model ref, or --model /path/to/checkpoint.zip"
+        )
+    if selected_sources > 1:
+        parser.error("pass exactly one of --run, a positional remote source, or --model")
     args.respect_task_termination = not args.continuous_play
     explicit_dests = explicit_arg_dests(parser, argv_list)
     if args.attribution_interval is None:
         args.attribution_interval = 8 if args.attribution == "occlusion" else 1
     with startup_progress("Resolving model reference", disabled=args.no_progress):
-        ref = model_source_ref(args)
-    if ref is None and not Path(str(args.model)).expanduser().is_file():
+        ref = model_source_ref(args) if not args.run else None
+    if not args.run and ref is None and not Path(str(args.model)).expanduser().is_file():
         parser.error(f"local model checkpoint not found: {args.model}")
     with startup_progress(
         "Downloading model" if ref is not None else "Opening local model",
         disabled=args.no_progress,
     ):
-        source = resolve_single_model_source(args, resolved_ref=ref)
+        source = (
+            download_public_run_source(
+                str(args.run),
+                root=Path(args.public_model_root),
+                public_base_url=str(args.public_models_base_url),
+            )
+            if args.run
+            else resolve_single_model_source(args, resolved_ref=ref)
+        )
     args.model = str(source.model_path)
-    if ref is not None:
+    if ref is not None or args.run:
         print(f"Downloaded model: {args.model}", flush=True)
     with startup_progress("Loading playback metadata", disabled=args.no_progress):
         if source.bundle is not None:

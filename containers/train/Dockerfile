@@ -23,7 +23,6 @@ ENV WANDB_DIR=/root/rlab/runs
 ENV WANDB_CACHE_DIR=/root/rlab/runs/.wandb-cache
 ENV WANDB_CONFIG_DIR=/root/rlab/runs/.wandb-config
 ENV WANDB_DATA_DIR=/root/rlab/runs/.wandb-data
-ENV WANDB_ARTIFACT_DIR=/root/rlab/runs/.wandb-artifacts
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -131,7 +130,8 @@ FROM scratch AS runtime-overlay
 COPY --from=app-package /opt/rlab /opt/rlab
 COPY src /root/rlab/src
 COPY scripts /root/rlab/scripts
-COPY experiments/machines.yaml /root/rlab/experiments/machines.yaml
+COPY experiments/goals /root/rlab/experiments/goals
+COPY experiments/recipes /root/rlab/experiments/recipes
 COPY experiments/modal_eval.yaml /root/rlab/experiments/modal_eval.yaml
 COPY --chmod=755 containers/train/rlab /usr/local/bin/rlab
 COPY --chmod=755 containers/train/entrypoint.sh /usr/local/bin/rlab-container-entrypoint

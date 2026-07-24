@@ -22,7 +22,6 @@ from statistics import median
 from typing import Any, Iterator, Mapping
 from urllib.parse import urlparse
 
-from rlab.job_queue import submission_batch_id
 from rlab.metric_names import (
     GLOBAL_STEP,
     TRAIN_EPISODE_RETURN_SHAPED_MEAN,
@@ -30,10 +29,11 @@ from rlab.metric_names import (
 )
 from rlab.provider_config import provider_num_envs
 from rlab.recipe_documents import compose_train_document
+from rlab.run_contracts import RUN_ID_PATTERN
 from rlab.training_backend import training_backend_id
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 SUPPORTED_BACKENDS = frozenset({"sb3.ppo", "sb3.a2c"})
 TRACE_ONLY_OVERRIDES = frozenset({"campaign_id", "description", "recipe_id"})
 FROZEN_BACKEND_KEYS = frozenset({"n_steps"})
@@ -182,7 +182,7 @@ def load_state(path: Path) -> dict[str, Any]:
     if version != SCHEMA_VERSION:
         raise ValueError(
             f"unsupported autoresearch study schema {version} in {path}; "
-            "v1 studies are historical and cannot be resumed"
+            "queue-backed v1/v2 studies are historical and cannot be resumed"
         )
     return state
 
@@ -582,13 +582,13 @@ def next_action(state: Mapping[str, Any]) -> dict[str, Any]:
         if wave["status"] == "reserved":
             return {
                 "action": "reconcile_submission",
-                "batch_id": wave["batch_id"],
                 "submission_key": wave["submission_key"],
+                "seeds": list(wave["seeds"]),
             }
     for wave in open_waves:
         for run in wave.get("terminal_runs") or []:
             if run.get("training_evidence") is None:
-                return {"action": "collect_training_evidence", "run_id": int(run["run_id"])}
+                return {"action": "collect_training_evidence", "run_id": str(run["run_id"])}
 
     baseline = state["candidates"][state["baseline_candidate_id"]]
     baseline_screen = candidate_wave(state, baseline["id"], SCREEN_PHASES)
@@ -626,12 +626,12 @@ def next_action(state: Mapping[str, Any]) -> dict[str, Any]:
                 return {"action": "reserve_search_pair", "candidate_id": screen["candidate_id"]}
 
     awaiting = [
-        int(run_id)
+        str(run_id)
         for wave in open_waves
         if wave["status"] == "launched"
         for run_id in wave["run_ids"]
-        if int(run_id)
-        not in {int(item["run_id"]) for item in wave.get("terminal_runs") or []}
+        if str(run_id)
+        not in {str(item["run_id"]) for item in wave.get("terminal_runs") or []}
     ]
     if awaiting:
         return {"action": "await_runs", "run_ids": sorted(awaiting)}
@@ -738,7 +738,7 @@ def command_init(args: argparse.Namespace) -> None:
             if committed_hash != item["sha256"] or file_sha256(root / item["path"]) != committed_hash:
                 raise RuntimeError(
                     "composition source differs from committed HEAD and cannot be launched "
-                    f"with --from-head: {item['path']}"
+                    f"as exact committed source: {item['path']}"
                 )
 
         backend_config = copy.deepcopy(train["training_backend"]["config"])
@@ -781,7 +781,7 @@ def command_init(args: argparse.Namespace) -> None:
             "rung_caps": caps,
             "runtime": None,
             "policy": {
-                "machine": "beast-3",
+                "compute_target": "b3",
                 "max_reserved_jobs": MAX_RESERVED_JOBS,
                 "stale_round_limit": DEFAULT_STALE_ROUNDS,
                 "confirmation_runs": CONFIRMATION_RUNS,
@@ -858,54 +858,55 @@ def expected_recipe_overrides(state: Mapping[str, Any], wave: Mapping[str, Any])
         for key, value in candidate["delta"].items()
     ]
     overrides.append(f"train.timesteps={int(wave['timesteps'])}")
-    description = (
+    return overrides
+
+
+def run_description(
+    state: Mapping[str, Any],
+    wave: Mapping[str, Any],
+    seed: int,
+) -> str:
+    return (
         f"Autoresearch {state['study_id'][:8]} {wave['phase']} candidate "
-        f"{wave['candidate_id']} seed {{seed}}. Training-only evidence; no evaluation or promotion."
+        f"{wave['candidate_id']} seed {int(seed)}. "
+        "Training-only evidence; no evaluation or promotion."
     )
-    return [*overrides, f"description={description}"]
 
 
 def materialized_recipe_overrides(
     state: Mapping[str, Any], wave: Mapping[str, Any], seed: int
 ) -> list[str]:
-    return [
-        value.replace("{seed}", str(int(seed)))
-        for value in expected_recipe_overrides(state, wave)
-    ]
+    del seed
+    return expected_recipe_overrides(state, wave)
 
 
-def launch_command(state: Mapping[str, Any], wave: Mapping[str, Any]) -> list[str]:
+def launch_command(
+    state: Mapping[str, Any],
+    wave: Mapping[str, Any],
+    seed: int,
+) -> list[str]:
     command = [
         "rlab",
         "experiment",
         "launch",
-        "--from-head",
         "--goal-file",
         state["goal_path"],
         "--recipe-file",
         state["recipe_path"],
-        "--machine",
-        state["policy"]["machine"],
-        "--request-id",
+        "--seed",
+        str(int(seed)),
+        "--run-description",
+        run_description(state, wave, seed),
+        "--compute",
+        "local",
+        "--target",
+        state["policy"]["compute_target"],
+        "--submission-key",
         wave["submission_key"],
         "--existing-runtime-only",
         "--checkpoint-eval-backend",
         "none",
     ]
-    runtime = state.get("runtime")
-    if runtime:
-        command.extend(
-            [
-                "--expected-runtime-image-ref",
-                runtime["image_ref"],
-                "--expected-runtime-input-sha256",
-                runtime["input_sha256"],
-                "--expected-runtime-build-source-sha",
-                runtime["build_source_sha"],
-            ]
-        )
-    for seed in wave["seeds"]:
-        command.extend(["--seed", str(seed)])
     for override in expected_recipe_overrides(state, wave):
         command.extend(["--set", override])
     command.append("--json")
@@ -949,7 +950,6 @@ def reserve_one(
         "seeds": seeds,
         "timesteps": int(timesteps),
         "submission_key": submission_key,
-        "batch_id": submission_batch_id(submission_key),
         "status": "reserved",
         "run_ids": [],
         "terminal_runs": [],
@@ -985,7 +985,7 @@ def command_reserve(args: argparse.Namespace) -> None:
             raise RuntimeError(f"state expects {action['action']}, not {phase} reservation")
         free = max(int(args.effective_capacity) - int(args.active_reservations), 0)
         if free <= 0:
-            raise RuntimeError("beast-3 has no available slot; wait without reserving a wave")
+            raise RuntimeError("B3 has no available slot; wait without reserving a wave")
 
         candidates = parse_candidates(args.candidates_json)
         if phase == "baseline-screen":
@@ -1076,13 +1076,20 @@ def command_reserve(args: argparse.Namespace) -> None:
             {
                 "candidate_id": wave["candidate_id"],
                 "submission_key": wave["submission_key"],
-                "batch_id": wave["batch_id"],
-                "command": launch_command(state, wave),
-                "shell_command": shlex.join(launch_command(state, wave)),
+                "commands": [
+                    {
+                        "seed": int(seed),
+                        "command": launch_command(state, wave, int(seed)),
+                        "shell_command": shlex.join(
+                            launch_command(state, wave, int(seed))
+                        ),
+                    }
+                    for seed in wave["seeds"]
+                ],
             }
             for wave in waves
         ]
-    emit({"study": str(path), "reserved": output, "launch_concurrently": len(output) > 1})
+    emit({"study": str(path), "reserved": output, "launch_concurrently": False})
 
 
 def read_json_arg(value: str | None, path: str | None) -> dict[str, Any]:
@@ -1103,137 +1110,61 @@ def command_record_launch(args: argparse.Namespace) -> None:
             return
         wave = find_wave(state, args.submission_key)
         errors: list[str] = []
-        observed_batch = str(
-            payload.get("batch_id") or (payload.get("selector") or {}).get("batch_id") or ""
-        )
-        if observed_batch != wave["batch_id"]:
-            errors.append("batch does not match deterministic batch id")
-        rows = payload.get("jobs") or payload.get("runs") or []
-        run_ids = (
-            payload.get("run_ids")
-            or payload.get("job_ids")
-            or [row.get("run_id", row.get("id")) for row in rows]
-        )
-        run_ids = [int(value) for value in run_ids if value is not None]
+        rows = payload.get("runs")
+        if rows is None and payload.get("run_id"):
+            rows = [payload]
+        rows = [dict(row) for row in rows or []]
+        run_ids = [str(row.get("run_id") or "") for row in rows]
         if len(run_ids) != len(wave["seeds"]) or len(set(run_ids)) != len(run_ids):
             errors.append("submission is partial or has an unexpected run count")
+        if any(RUN_ID_PATTERN.fullmatch(run_id) is None for run_id in run_ids):
+            errors.append("submission contains a malformed immutable run id")
         if rows:
-            observed_seeds = sorted(
-                int((row.get("submission") or {}).get("seed", row.get("seed"))) for row in rows
-            )
+            observed_seeds = sorted(int(row.get("seed")) for row in rows)
             if observed_seeds != sorted(wave["seeds"]):
                 errors.append("submission rows do not match the reserved training seeds")
-            submissions = [row.get("submission") or {} for row in rows]
-            observed_keys = {
-                str(item.get("key", row.get("submission_key")) or "")
-                for item, row in zip(submissions, rows, strict=True)
-            }
+            observed_keys = {str(row.get("submission_key") or "") for row in rows}
             if observed_keys != {wave["submission_key"]}:
                 errors.append("submission rows do not match the reserved submission key")
-            request_hashes = {str(item.get("request_hash") or "") for item in submissions}
-            if request_hashes == {""}:
-                request_hashes = {str(row.get("request_hash") or "") for row in rows}
-            if len(request_hashes) != 1 or "" in request_hashes:
-                errors.append("submission rows do not share one non-empty request hash")
-            observed_sources = {
-                str(row.get("source_sha") or row.get("repo_git_commit") or "") for row in rows
-            }
+            observed_sources = {str(row.get("source_sha") or "") for row in rows}
             if observed_sources != {state["source_sha"]}:
                 errors.append("submission rows do not match the pinned source revision")
-            goal_paths = {
-                str(item.get("goal_path", row.get("goal_path")) or "")
-                for item, row in zip(submissions, rows, strict=True)
-            }
-            recipe_paths = {
-                str(item.get("recipe_path", row.get("recipe_path")) or "")
-                for item, row in zip(submissions, rows, strict=True)
-            }
+            goal_paths = {str(row.get("goal_file") or "") for row in rows}
+            recipe_paths = {str(row.get("recipe_file") or "") for row in rows}
             if goal_paths != {state["goal_path"]} or recipe_paths != {state["recipe_path"]}:
                 errors.append("submission rows do not match the pinned goal and recipe paths")
-            pinned_hashes = {item["path"]: item["sha256"] for item in state["source_files"]}
-            goal_hashes = {
-                str(item.get("goal_sha256", row.get("goal_sha256")) or "")
-                for item, row in zip(submissions, rows, strict=True)
-            }
-            recipe_hashes = {
-                str(item.get("recipe_sha256", row.get("recipe_sha256")) or "")
-                for item, row in zip(submissions, rows, strict=True)
-            }
-            if goal_hashes != {pinned_hashes[state["goal_path"]]} or recipe_hashes != {
-                state["recipe_preimage_sha256"]
-            }:
-                errors.append("submission rows do not match the pinned goal and recipe hashes")
-            observed_overrides = []
-            for item, row in zip(submissions, rows, strict=True):
-                recipe_payload = row.get("recipe_payload_json") or {}
-                recipe_document = recipe_payload.get("recipe") or {}
-                observed_overrides.append(
-                    list(
-                        item.get("recipe_overrides")
-                        or recipe_payload.get("recipe_overrides")
-                        or recipe_document.get("recipe_overrides")
-                        or []
-                    )
-                )
-                train_config = row.get("train_config") or {}
-                if train_config and str(train_config.get("checkpoint_eval_backend")) != "none":
-                    errors.append("submission row did not materialize training-only execution")
-            expected_overrides = [
-                materialized_recipe_overrides(
-                    state,
-                    wave,
-                    int((row.get("submission") or {}).get("seed", row.get("seed"))),
-                )
+            if any(
+                list(row.get("recipe_overrides") or [])
+                != expected_recipe_overrides(state, wave)
                 for row in rows
-            ]
-            if observed_overrides != expected_overrides:
+            ):
                 errors.append("submission rows do not match the reserved recipe overrides")
-        runtime = {
-            "image_ref": str(payload.get("runtime_image_ref") or ""),
-            "input_sha256": str(payload.get("runtime_input_sha256") or ""),
-            "build_source_sha": str(payload.get("runtime_build_source_sha") or ""),
+            if any(
+                str(row.get("run_description") or "")
+                != run_description(state, wave, int(row["seed"]))
+                for row in rows
+            ):
+                errors.append("submission rows do not match the reserved descriptions")
+            if any(
+                str(row.get("checkpoint_eval_backend") or "") != "none"
+                for row in rows
+            ):
+                errors.append("submission row did not materialize training-only execution")
+        row_runtimes = {
+            (
+                str(row.get("image_digest") or ""),
+                str(row.get("runtime_input_sha256") or ""),
+                str(row.get("runtime_build_source_sha") or ""),
+            )
+            for row in rows
         }
-        if not all(runtime.values()) and rows:
-            first = rows[0]
-            runtime_projection = first.get("runtime") or {}
-            config = first.get("train_config") or {}
-            runtime = {
-                "image_ref": str(
-                    runtime_projection.get("image_ref") or first.get("runtime_image_ref") or ""
-                ),
-                "input_sha256": str(
-                    runtime_projection.get("input_sha256")
-                    or config.get("runtime_input_sha256")
-                    or ""
-                ),
-                "build_source_sha": str(
-                    runtime_projection.get("build_source_sha")
-                    or config.get("runtime_build_source_sha")
-                    or ""
-                ),
-            }
-        if rows:
-            row_runtimes = set()
-            for row in rows:
-                projected = row.get("runtime") or {}
-                config = row.get("train_config") or {}
-                row_runtimes.add(
-                    (
-                        str(projected.get("image_ref") or row.get("runtime_image_ref") or ""),
-                        str(
-                            projected.get("input_sha256")
-                            or config.get("runtime_input_sha256")
-                            or ""
-                        ),
-                        str(
-                            projected.get("build_source_sha")
-                            or config.get("runtime_build_source_sha")
-                            or ""
-                        ),
-                    )
-                )
-            if len(row_runtimes) != 1 or next(iter(row_runtimes)) != tuple(runtime.values()):
-                errors.append("submission rows do not share the resolved runtime triplet")
+        runtime = {
+            "image_ref": next(iter(row_runtimes))[0] if len(row_runtimes) == 1 else "",
+            "input_sha256": next(iter(row_runtimes))[1] if len(row_runtimes) == 1 else "",
+            "build_source_sha": next(iter(row_runtimes))[2] if len(row_runtimes) == 1 else "",
+        }
+        if rows and len(row_runtimes) != 1:
+            errors.append("submission rows do not share the resolved runtime triplet")
         if not all(runtime.values()):
             errors.append("launch/status payload lacks the complete runtime triplet")
         if state.get("runtime") and state["runtime"] != runtime:
@@ -1262,12 +1193,19 @@ def command_record_launch(args: argparse.Namespace) -> None:
 
 def command_record_terminal(args: argparse.Namespace) -> None:
     payload = read_json_arg(args.event_json, args.event_file)
-    submission = payload.get("submission") or {}
-    submission_key = str(args.submission_key or submission.get("key") or "")
-    run_id = int(args.run_id if args.run_id is not None else payload.get("run_id"))
-    seed = int(args.seed if args.seed is not None else submission.get("seed"))
+    semantic = payload.get("semantic") or {}
+    manifest = semantic.get("manifest") or {}
+    submission_key = str(
+        args.submission_key
+        or (manifest.get("compute") or {}).get("submission_key")
+        or ""
+    )
+    run_id = str(args.run_id or payload.get("run_id") or "")
+    seed = int(args.seed if args.seed is not None else manifest.get("seed"))
     if not submission_key:
-        raise ValueError("terminal event lacks submission.key")
+        raise ValueError("terminal event lacks the autoresearch submission key")
+    if RUN_ID_PATTERN.fullmatch(run_id) is None:
+        raise ValueError("terminal event lacks a valid immutable run id")
     path = study_path(args.study)
     with edit_state(path) as state:
         wave = find_wave(state, submission_key)
@@ -1275,20 +1213,28 @@ def command_record_terminal(args: argparse.Namespace) -> None:
             raise RuntimeError("terminal run is not part of the recorded launch")
         if seed not in wave["seeds"]:
             raise RuntimeError("terminal seed is not part of the reservation")
-        if any(int(item["run_id"]) == run_id for item in wave["terminal_runs"]):
+        if any(str(item["run_id"]) == run_id for item in wave["terminal_runs"]):
             emit({"study": str(path), "duplicate": True, "run_id": run_id})
             return
-        classification = str(payload.get("terminal_classification") or "")
-        evaluation = payload.get("evaluation") or {}
-        wandb = payload.get("wandb") or {}
-        wandb_terminal = payload.get("wandb_terminal") or {}
+        terminal = payload.get("attempt_terminal") or {}
+        drain = terminal.get("drain") or {}
+        wandb = manifest.get("wandb") or {}
+        classification = (
+            "completed" if str(terminal.get("state") or "") == "succeeded" else "failed"
+        )
+        high_water = int(terminal.get("wandb_high_water_mark") or 0)
+        remote_high_water = int(drain.get("wandb_remote_high_water_mark") or 0)
         valid = (
             classification == "completed"
-            and evaluation.get("acceptance_required") is False
-            and bool(wandb.get("remote_verified"))
+            and terminal.get("acceptance_required") is False
+            and drain.get("complete") is True
+            and high_water > 0
+            and remote_high_water >= high_water
             and bool(wandb.get("url"))
             and bool(wandb.get("run_id"))
-            and str(wandb_terminal.get("state") or "finished") == "finished"
+            and semantic.get("terminal") is None
+            and payload.get("scientific_success") is False
+            and bool((payload.get("dstack") or {}).get("terminal"))
         )
         record = {
             "run_id": run_id,
@@ -1306,9 +1252,12 @@ def command_record_terminal(args: argparse.Namespace) -> None:
                 "event": "terminal_without_valid_training_evidence_source",
                 "run_id": run_id,
                 "classification": classification,
-                "acceptance_required": evaluation.get("acceptance_required"),
-                "remote_verified": bool(wandb.get("remote_verified")),
-                "wandb_state": wandb_terminal.get("state"),
+                "acceptance_required": terminal.get("acceptance_required"),
+                "drain_complete": drain.get("complete"),
+                "wandb_high_water_mark": high_water,
+                "wandb_remote_high_water_mark": remote_high_water,
+                "scientific_success": payload.get("scientific_success"),
+                "dstack_terminal": bool((payload.get("dstack") or {}).get("terminal")),
             }
         elif len(wave["terminal_runs"]) == len(wave["seeds"]):
             wave["status"] = "awaiting_evidence"
@@ -1339,46 +1288,74 @@ def fetch_training_evidence(
     mode: str = EVIDENCE_SUCCESS,
     return_tail_fraction: float = RETURN_TAIL_FRACTION,
 ) -> dict[str, Any]:
-    from rlab.job_queue import connect
-    from rlab.telemetry_evidence import training_facts_by_wandb_run_id
+    from rlab.wandb_utils import load_wandb_env
 
-    database_url = str(os.environ.get("DATABASE_URL") or "").strip()
-    if not database_url:
-        raise RuntimeError("autoresearch evidence requires DATABASE_URL")
-    conn = connect(database_url)
-    try:
-        facts = training_facts_by_wandb_run_id(
-            conn, wandb_run_id=str(expected_run_id)
+    load_wandb_env()
+    import wandb
+
+    run = wandb.Api().run(_wandb_run_path(url))
+    if str(getattr(run, "id", "") or "") != str(expected_run_id):
+        raise RuntimeError("W&B run identity does not match the recorded dstack run")
+    count_keys = [f"train/outcome/success/from/{start}/count" for start in starts]
+    keys = [
+        GLOBAL_STEP,
+        *count_keys,
+        TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN,
+        TRAIN_EPISODE_RETURN_SHAPED_MEAN,
+    ]
+    history = [dict(row) for row in run.scan_history(keys=keys)]
+    if not history:
+        raise RuntimeError("W&B run has no remotely visible training history")
+    counts = {
+        start: max(
+            (
+                int(row.get(metric) or 0)
+                for row in history
+                if row.get(metric) is not None
+            ),
+            default=0,
         )
-    finally:
-        conn.close()
-    metrics = dict(facts.get("metrics") or {})
-    dimensions = dict(facts.get("dimensions") or {})
-    counts: dict[str, int] = {}
-    for start in starts:
-        metric = f"train/outcome/success/from/{start}/count"
-        raw = metrics.get(metric)
-        counts[start] = int(raw or 0)
+        for start, metric in zip(starts, count_keys, strict=True)
+    }
     all_starts_succeeded = all(value > 0 for value in counts.values())
-    peak_raw = metrics.get(
-        f"{TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN}/peak",
-        metrics.get(TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN),
+    rate_rows = [
+        (int(row.get(GLOBAL_STEP) or 0), float(row[TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN]))
+        for row in history
+        if row.get(TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN) is not None
+    ]
+    peak = max((value for _step, value in rate_rows), default=None)
+    first_strong_step = next(
+        (
+            step
+            for step, value in sorted(rate_rows)
+            if value >= float(strong_threshold)
+        ),
+        None,
     )
-    peak = None if peak_raw is None else float(peak_raw)
-    first_step_raw = metrics.get(
-        f"{TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN}/first_threshold_step"
-    )
-    first_strong_step = None if first_step_raw is None else int(first_step_raw)
-    observed_max_step = int(metrics.get(GLOBAL_STEP) or 0)
-    tail_mean_raw = metrics.get(
-        f"{TRAIN_EPISODE_RETURN_SHAPED_MEAN}/tail_{return_tail_fraction:g}_mean"
-    )
-    tail_count = int(
-        metrics.get(f"{TRAIN_EPISODE_RETURN_SHAPED_MEAN}/tail_count") or 0
-    )
+    observed_max_step = max((int(row.get(GLOBAL_STEP) or 0) for row in history), default=0)
+    returns = [
+        float(row[TRAIN_EPISODE_RETURN_SHAPED_MEAN])
+        for row in history
+        if row.get(TRAIN_EPISODE_RETURN_SHAPED_MEAN) is not None
+    ]
+    tail_count = max(1, math.ceil(len(returns) * float(return_tail_fraction))) if returns else 0
+    tail_values = returns[-tail_count:] if tail_count else []
+    tail_mean_raw = sum(tail_values) / len(tail_values) if tail_values else None
     return_valid = tail_mean_raw is not None and tail_count >= 10
-    return_points = int(
-        metrics.get(f"{TRAIN_EPISODE_RETURN_SHAPED_MEAN}/points") or 0
+    return_points = len(returns)
+    sorted_tail = sorted(tail_values)
+    tail_p05 = (
+        sorted_tail[max(0, math.ceil(len(sorted_tail) * 0.05) - 1)]
+        if sorted_tail
+        else None
+    )
+    tail_std = (
+        math.sqrt(
+            sum((value - float(tail_mean_raw)) ** 2 for value in tail_values)
+            / len(tail_values)
+        )
+        if tail_values
+        else None
     )
     result = {
         "evidence_mode": mode,
@@ -1390,27 +1367,21 @@ def fetch_training_evidence(
         "observed_max_step": observed_max_step,
         "strong_threshold": strong_threshold,
         "wandb_run_id": str(expected_run_id),
-        "wandb_url": str(facts.get("wandb_url") or url),
-        "wandb_state": "diagnostic_only",
-        "authority": "run_final_exact",
-        "scope_sha256": str(facts["scope_sha256"]),
-        "comparability_sha256": str(facts["comparability_sha256"]),
-        "rank_direction": str(dimensions["rank_direction"]),
+        "wandb_url": str(getattr(run, "url", "") or url),
+        "wandb_state": str(getattr(run, "state", "") or "unknown"),
+        "authority": "wandb_history",
+        "rank_direction": "maximize",
         "collected_at": utc_now(),
         "return_metric": TRAIN_EPISODE_RETURN_SHAPED_MEAN,
         "return_points": return_points,
         "return_tail_fraction": float(return_tail_fraction),
         "return_tail_points": tail_count,
         "return_evidence_valid": return_valid,
-        "return_peak": metrics.get(f"{TRAIN_EPISODE_RETURN_SHAPED_MEAN}/peak"),
-        "return_last": metrics.get(f"{TRAIN_EPISODE_RETURN_SHAPED_MEAN}/last"),
+        "return_peak": max(returns, default=None),
+        "return_last": returns[-1] if returns else None,
         "return_tail_mean": tail_mean_raw,
-        "return_tail_p05": metrics.get(
-            f"{TRAIN_EPISODE_RETURN_SHAPED_MEAN}/tail_p05"
-        ),
-        "return_tail_std": metrics.get(
-            f"{TRAIN_EPISODE_RETURN_SHAPED_MEAN}/tail_std"
-        ),
+        "return_tail_p05": tail_p05,
+        "return_tail_std": tail_std,
     }
     if mode == EVIDENCE_RETURN and not return_valid:
         result["strong"] = False
@@ -1432,13 +1403,13 @@ def command_collect_training_evidence(args: argparse.Namespace) -> None:
     matches: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for wave in state["waves"]:
         for record in wave.get("terminal_runs") or []:
-            if int(record["run_id"]) == int(args.run_id):
+            if str(record["run_id"]) == str(args.run_id):
                 matches.append((wave, record))
     if len(matches) != 1:
         raise ValueError(f"run {args.run_id} maps to {len(matches)} terminal records")
     _, record = matches[0]
     if record.get("training_evidence") is not None:
-        emit({"study": str(path), "run_id": int(args.run_id), "duplicate": True})
+        emit({"study": str(path), "run_id": str(args.run_id), "duplicate": True})
         return
     evidence = fetch_training_evidence(
         url=str(record["wandb_url"]),
@@ -1455,13 +1426,13 @@ def command_collect_training_evidence(args: argparse.Namespace) -> None:
         current_matches: list[tuple[dict[str, Any], dict[str, Any]]] = []
         for wave in current["waves"]:
             for item in wave.get("terminal_runs") or []:
-                if int(item["run_id"]) == int(args.run_id):
+                if str(item["run_id"]) == str(args.run_id):
                     current_matches.append((wave, item))
         if len(current_matches) != 1:
             raise RuntimeError("terminal record changed while collecting W&B evidence")
         wave, item = current_matches[0]
         if item.get("training_evidence") is not None:
-            emit({"study": str(path), "run_id": int(args.run_id), "duplicate": True})
+            emit({"study": str(path), "run_id": str(args.run_id), "duplicate": True})
             return
         if str(item["wandb_run_id"]) != evidence["wandb_run_id"]:
             raise RuntimeError("W&B identity changed while collecting evidence")
@@ -1481,7 +1452,7 @@ def command_collect_training_evidence(args: argparse.Namespace) -> None:
     emit(
         {
             "study": str(path),
-            "run_id": int(args.run_id),
+            "run_id": str(args.run_id),
             "training_evidence": evidence,
             "next": next_action(load_state(path)),
         }
@@ -1504,10 +1475,10 @@ def command_upgrade_return_mode(args: argparse.Namespace) -> None:
     if any(candidate.get("pair_runs") for candidate in state["candidates"].values()):
         raise RuntimeError("return-mode upgrade must precede paired evidence")
 
-    records: dict[int, dict[str, Any]] = {}
+    records: dict[str, dict[str, Any]] = {}
     for wave in state["waves"]:
         for item in wave.get("terminal_runs") or []:
-            run_id = int(item["run_id"])
+            run_id = str(item["run_id"])
             records[run_id] = fetch_training_evidence(
                 url=str(item["wandb_url"]),
                 expected_run_id=str(item["wandb_run_id"]),
@@ -1528,13 +1499,13 @@ def command_upgrade_return_mode(args: argparse.Namespace) -> None:
             if wave["phase"] in SEARCH_PHASES:
                 wave["closed"] = False
             for item in wave.get("terminal_runs") or []:
-                item["training_evidence"] = copy.deepcopy(records[int(item["run_id"])])
+                item["training_evidence"] = copy.deepcopy(records[str(item["run_id"])])
         for candidate in current["candidates"].values():
             for destination in ("screen_runs", "pair_runs", "confirmation_runs"):
                 for item in candidate.get(destination) or []:
                     run_id = item.get("run_id")
-                    if run_id is not None and int(run_id) in records:
-                        item["training_evidence"] = copy.deepcopy(records[int(run_id)])
+                    if run_id is not None and str(run_id) in records:
+                        item["training_evidence"] = copy.deepcopy(records[str(run_id)])
         current["search_round"] = 0
         current["stale_rounds"] = 0
         current["incumbent_candidate_id"] = None
@@ -1843,7 +1814,7 @@ def build_parser() -> argparse.ArgumentParser:
     terminal = commands.add_parser("record-terminal")
     terminal.add_argument("--study", required=True)
     terminal.add_argument("--submission-key")
-    terminal.add_argument("--run-id", type=int)
+    terminal.add_argument("--run-id")
     terminal.add_argument("--seed", type=int)
     terminal.add_argument("--event-json")
     terminal.add_argument("--event-file")
@@ -1851,7 +1822,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     evidence = commands.add_parser("collect-training-evidence")
     evidence.add_argument("--study", required=True)
-    evidence.add_argument("--run-id", type=int, required=True)
+    evidence.add_argument("--run-id", required=True)
     evidence.set_defaults(handler=command_collect_training_evidence)
 
     return_mode = commands.add_parser("upgrade-return-mode")

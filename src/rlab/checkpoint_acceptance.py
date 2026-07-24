@@ -46,7 +46,6 @@ def portable_asset_from_train_config(
     asset = validate_rom_asset_manifest(
         asset_value,
         expected_game=game,
-        allow_legacy=True,
     )
     return {
         key: value
@@ -151,7 +150,6 @@ class CheckpointEvalContractCompiler:
                 asset = validate_rom_asset_manifest(
                     asset_value,
                     expected_game=str(environment.get("game") or ""),
-                    allow_legacy=True,
                 )
                 if portable_asset:
                     asset = {

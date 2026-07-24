@@ -1,6 +1,7 @@
 enabled: true
 deployment:
-  app_name_prefix: rlab-eval
+  environment_name: rlab-eval
+  app_name_prefix: rlab-eval-v2
   function_name: evaluate_checkpoint
 cleanup:
   enabled: true
@@ -9,8 +10,7 @@ cleanup:
   max_stops_per_pass: 10
 limits:
   hard_max_active: 10
-  per_run_budget_usd: 5.0
-  rolling_24h_budget_usd: 20.0
+  alert_per_run_usd: 5.0
 resources:
   cpu: 8.0
   memory_mib: 4096

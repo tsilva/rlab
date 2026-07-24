@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
@@ -36,12 +35,6 @@ from rlab.metric_names import (
 )
 from rlab.ranking import parse_objective_rank, parse_persisted_objective_rank, rank_score
 from rlab.wandb_utils import DEFAULT_WANDB_PROJECT_PATH, load_wandb_env
-from rlab.dotenv import load_env_file
-from rlab.job_queue import connect
-from rlab.telemetry_evidence import (
-    authoritative_checkpoint_evidence,
-    authoritative_run_facts,
-)
 
 
 RUN_OBJECTIVE_KEYS = (
@@ -523,23 +516,18 @@ def add_common_args(parser: argparse.ArgumentParser, *, suppress_defaults: bool 
         default=argparse.SUPPRESS if suppress_defaults else False,
         help="Print JSON instead of TSV.",
     )
-    parser.add_argument(
-        "--database-url",
-        default=argparse.SUPPRESS if suppress_defaults else os.environ.get("DATABASE_URL"),
-        help="Authoritative telemetry PostgreSQL URL (defaults to DATABASE_URL).",
-    )
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="rlab leaders",
-        description="Query exact authoritative telemetry evidence for rlab goals.",
+        description="Query W&B summaries projected from verified R2 run receipts.",
     )
     add_common_args(parser)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     runs = subparsers.add_parser(
-        "runs", help="Rank complete exact run cohorts from run_final_exact facts."
+        "runs", help="Rank completed training runs from W&B scientific metrics."
     )
     add_common_args(runs, suppress_defaults=True)
     runs.add_argument("--min-seeds", type=int, default=1)
@@ -548,8 +536,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help=(
-            "Authoritative final metric to rank; may be repeated. It must match the "
-            "run_final_exact rank contract."
+            "Final W&B metric to rank; may be repeated."
         ),
     )
     runs.set_defaults(func=cmd_runs)
@@ -564,127 +551,52 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def cmd_runs(args: argparse.Namespace) -> int:
-    if not args.database_url:
-        raise RuntimeError("leaders require DATABASE_URL authoritative evidence access")
-    conn = connect(str(args.database_url))
-    try:
-        facts = authoritative_run_facts(
-            conn,
-            goal_slug=args.goal,
-            reward_shape=args.reward_shape,
+    scores = (
+        score
+        for run in wandb_runs(
+            project=args.project,
+            goal=args.goal,
+            extra_filter=run_objective_filter(run_query_objective_keys(args)),
+            order=RUN_PRIMARY_ORDER,
         )
-    finally:
-        conn.close()
-    requested = tuple(args.objective_key or ())
-    grouped_facts: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
-    for fact in facts:
-        dimensions = dict(fact["dimensions"])
-        rank_metric = str(dimensions["rank_metric"])
-        if requested and rank_metric not in requested:
-            continue
-        metrics = dict(fact["metrics"])
-        if rank_metric not in metrics:
-            raise RuntimeError(f"run_final_exact lacks its rank metric: {rank_metric}")
-        grouped_facts[
-            (str(fact["comparability_sha256"]), str(fact["cohort_manifest_sha256"]))
-        ].append(fact)
-    ranked_rows: list[dict[str, Any]] = []
-    for cohort in grouped_facts.values():
-        dimensions = dict(cohort[0]["dimensions"])
-        metric = str(dimensions["rank_metric"])
-        direction = str(dimensions["rank_direction"])
-        values = [float(dict(fact["metrics"])[metric]) for fact in cohort]
-        if len(values) < max(1, int(args.min_seeds)):
-            continue
-        steps = [
-            int(dict(fact["metrics"])["global_step"])
-            for fact in cohort
-            if dict(fact["metrics"]).get("global_step") is not None
-        ]
-        ranked_rows.append(
-            {
-                "goal_slug": dimensions["goal_slug"],
-                "recipe_slug": dimensions["recipe_slug"],
-                "reward_shape": dimensions["reward_program_name"],
-                "rank_metric": metric,
-                "rank_direction": direction,
-                "seeds": len(values),
-                "worst_seed": min(values) if direction == "max" else max(values),
-                "mean_seed": mean(values),
-                "best_seed": max(values) if direction == "max" else min(values),
-                "mean_steps": mean(steps) if steps else None,
-                "scope_sha256s": [fact["scope_sha256"] for fact in cohort],
-            }
-        )
-    ranked_rows.sort(
-        key=lambda row: (
-            (
-                float(row["worst_seed"])
-                if row["rank_direction"] == "max"
-                else -float(row["worst_seed"])
-            ),
-            (
-                float(row["mean_seed"])
-                if row["rank_direction"] == "max"
-                else -float(row["mean_seed"])
-            ),
-            (
-                float(row["best_seed"])
-                if row["rank_direction"] == "max"
-                else -float(row["best_seed"])
-            ),
-            -(float(row["mean_steps"]) if row["mean_steps"] is not None else float("inf")),
-        ),
-        reverse=True,
+        if (score := run_score(run, objective_keys=run_query_objective_keys(args))) is not None
     )
-    ranked_rows = ranked_rows[: max(0, int(args.limit))]
+    if args.reward_shape:
+        scores = (score for score in scores if score.reward_shape == args.reward_shape)
+    ranked_rows = rank_run_leaders(scores, min_seeds=max(1, int(args.min_seeds)))[
+        : max(0, int(args.limit))
+    ]
     if args.json:
-        print(json.dumps(json_safe(ranked_rows), indent=2, sort_keys=True))
+        print_json(ranked_rows)
     else:
-        print(
-            "goal_slug\trecipe_slug\treward_shape\trank_metric\trank_direction\t"
-            "seeds\tworst_seed\tmean_seed\tbest_seed\tmean_steps"
-        )
-        for row in ranked_rows:
-            mean_steps = (
-                "" if row["mean_steps"] is None else f"{float(row['mean_steps']):.6g}"
-            )
-            print(
-                f"{row['goal_slug']}\t{row['recipe_slug']}\t{row['reward_shape']}\t"
-                f"{row['rank_metric']}\t{row['rank_direction']}\t{row['seeds']}\t"
-                f"{float(row['worst_seed']):.6g}\t{float(row['mean_seed']):.6g}\t"
-                f"{float(row['best_seed']):.6g}\t{mean_steps}"
-            )
+        print_run_leaders(ranked_rows)
     return 0
 
 
 def cmd_checkpoints(args: argparse.Namespace) -> int:
-    if not args.database_url:
-        raise RuntimeError("leaders require DATABASE_URL authoritative evidence access")
-    conn = connect(str(args.database_url))
-    try:
-        ranked = authoritative_checkpoint_evidence(conn, goal_slug=args.goal)[
-            : max(0, int(args.limit))
-        ]
-    finally:
-        conn.close()
+    candidates = (
+        leader
+        for run in wandb_runs(
+            project=args.project,
+            goal=args.goal,
+            extra_filter=checkpoint_summary_filter(),
+            order=CHECKPOINT_PRIMARY_ORDER,
+        )
+        if (leader := checkpoint_leader(run)) is not None
+    )
+    if args.reward_shape:
+        candidates = (
+            leader for leader in candidates if leader.reward_shape == args.reward_shape
+        )
+    ranked = rank_checkpoint_leaders(candidates)[: max(0, int(args.limit))]
     if args.json:
-        print(json.dumps(json_safe(ranked), indent=2, sort_keys=True))
+        print_json(ranked)
     else:
-        print("scope_sha256\texecution_key\tcheckpoint_sha256\taccepted")
-        for row in ranked:
-            checkpoint = dict(row.get("checkpoint") or {})
-            results = list(row.get("results") or [])
-            accepted = bool(results) and all(bool(item.get("passed")) for item in results)
-            print(
-                f"{row.get('scope_sha256', '')}\t{row.get('execution_key', '')}\t"
-                f"{checkpoint.get('sha256', '')}\t{str(accepted).lower()}"
-            )
+        print_checkpoint_leaders(ranked)
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    load_env_file(key_filter=lambda key: key == "DATABASE_URL")
     args = build_parser().parse_args(argv)
     return int(args.func(args))
 

@@ -42,7 +42,6 @@ for name in sorted(sys.modules):
             (("experiment", "follow", "--help"), "usage: rlab experiment follow"),
             (("eval", "--help"), "usage: rlab eval"),
             (("eval", "run", "--help"), "usage: rlab eval run"),
-            (("eval", "modal", "status", "--help"), "usage: rlab eval modal status"),
             (("play", "--help"), "usage: rlab play"),
             (("import-roms", "--help"), "usage: rlab import-roms"),
             (("benchmark", "run", "--help"), "usage: rlab benchmark run"),
@@ -53,8 +52,6 @@ for name in sorted(sys.modules):
             (("dataset", "verify", "--help"), "usage: rlab dataset verify"),
             (("leaders", "runs", "--help"), "usage: rlab leaders runs"),
             (("reports", "plan", "--help"), "usage: rlab reports plan"),
-            (("fleet", "service", "status", "--help"), "usage: rlab fleet service status"),
-            (("fleet", "service", "watch", "--help"), "usage: rlab fleet service watch"),
         )
         for argv, expected_usage in cases:
             with self.subTest(command=" ".join(argv)):
@@ -71,7 +68,7 @@ for name in sorted(sys.modules):
         self.assertEqual(raised.exception.code, 0)
         help_text = stdout.getvalue()
         normalized_help = " ".join(help_text.split())
-        self.assertIn("current clean source revision", normalized_help)
+        self.assertIn("exact-source immutable runtime image", normalized_help)
         self.assertIn("never falls back to an older image", normalized_help)
         self.assertNotIn("defaults to latest", normalized_help)
 

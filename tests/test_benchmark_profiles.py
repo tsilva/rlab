@@ -134,7 +134,7 @@ timstepz: 10
             with self.assertRaisesRegex(ValueError, "unknown field.*timstepz"):
                 load_benchmark_profile(path)
 
-    def test_local_smoke_uses_queue_backed_local_fleet_commands(self) -> None:
+    def test_local_smoke_uses_dstack_local_compute(self) -> None:
         profile = find_benchmark_profile("local-smoke-mario-l11")
         commands = build_benchmark_commands(profile)
 
@@ -143,18 +143,17 @@ timstepz: 10
             ["train-local-smoke"],
         )
         self.assertEqual(
-            commands[0].argv[:4],
-            ("rlab", "experiment", "launch", "--from-head"),
+            commands[0].argv[:3],
+            ("rlab", "experiment", "launch"),
         )
-        self.assertNotIn("local", commands[0].argv[:4])
-        self.assertIn("--machine", commands[0].argv)
-        self.assertIn("local-macbook", commands[0].argv)
-        self.assertIn("--wait", commands[0].argv)
-        self.assertIn("terminal", commands[0].argv)
+        self.assertIn("--compute", commands[0].argv)
         self.assertEqual(
-            commands[0].argv[commands[0].argv.index("--checkpoint-eval-backend") + 1],
-            "none",
+            commands[0].argv[commands[0].argv.index("--compute") + 1],
+            "local",
         )
+        self.assertIn("--target", commands[0].argv)
+        self.assertIn("b3", commands[0].argv)
+        self.assertIn("--max-duration", commands[0].argv)
         self.assertIn("--json", commands[0].argv)
         self.assertEqual(commands[0].argv[commands[0].argv.index("--seed") + 1], "123")
 
@@ -162,10 +161,9 @@ timstepz: 10
 
         parsed = build_experiment_parser().parse_args(list(commands[0].argv[2:]))
         self.assertEqual(parsed.command, "launch")
-        self.assertTrue(parsed.from_head)
-        self.assertEqual(parsed.machine, "local-macbook")
-        self.assertEqual(parsed.wait, "terminal")
-        self.assertTrue(parsed.output_json)
+        self.assertEqual(parsed.compute, "local")
+        self.assertEqual(parsed.target, "b3")
+        self.assertTrue(parsed.json)
 
     def test_env_throughput_generates_mode_env_matrix(self) -> None:
         profile = find_benchmark_profile("mario-env-throughput-l11")
@@ -380,8 +378,8 @@ required_metrics: [train/throughput/not_real]
         payload = json.loads(stdout.getvalue())
         self.assertNotIn("execution_mode", payload)
         self.assertEqual(
-            payload["commands"][0]["argv"][:4],
-            ["rlab", "experiment", "launch", "--from-head"],
+            payload["commands"][0]["argv"][:3],
+            ["rlab", "experiment", "launch"],
         )
 
 

@@ -1,0 +1,18 @@
+[Unit]
+Description=Prune unused rlab dstack training images
+After=docker.service rlab-dstack-server.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/rlab/dstack/server.env
+Environment=DSTACK_SERVER_URL=http://127.0.0.1:3000
+Environment=DSTACK_PROJECT=main
+ExecStart=/usr/local/libexec/rlab-dstack-image-cleanup
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/run

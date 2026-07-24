@@ -14,10 +14,29 @@ RUNTIME_IMAGE_REF = "docker:ghcr.io/tsilva/rlab/rlab-train@sha256:" + "a" * 64
 
 def image_payload() -> dict:
     return {
-        "schema_version": 3,
+        "schema_version": 5,
         "runtime_image_ref": RUNTIME_IMAGE_REF,
         "digest": "sha256:" + "a" * 64,
         "source_sha": SOURCE_SHA,
+        "runtime_input_sha256": "d" * 64,
+        "runtime_build_source_sha": "2" * 40,
+        "overlay_key": "1" * 64,
+        "dependency_key": "2" * 64,
+        "gpu_key": "3" * 64,
+        "train_plan_sha256": "4" * 64,
+        "gpu_plan_sha256": "5" * 64,
+        "tags": ["runtime-" + "d" * 64],
+        "uv_lock_sha256": "e" * 64,
+        "base_images": {
+            "gpu": (
+                "docker:ghcr.io/tsilva/rlab/rlab-train-gpu@sha256:"
+                + "9" * 64
+            ),
+            "dependencies": (
+                "docker:ghcr.io/tsilva/rlab/rlab-train-dependencies@sha256:"
+                + "f" * 64
+            ),
+        },
         "workflow_run_id": "11",
     }
 

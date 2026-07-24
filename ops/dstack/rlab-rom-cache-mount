@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source_path=/var/lib/rlab/rom-cache-source
+mount_path=/var/lib/rlab/rom-cache
+
+case "${1:-}" in
+  start)
+    install -d -m 0755 "$source_path" "$mount_path"
+    if mountpoint -q "$mount_path"; then
+      findmnt -n -o OPTIONS --target "$mount_path" | tr ',' '\n' | grep -qx ro
+      exit 0
+    fi
+    mount --bind "$source_path" "$mount_path"
+    mount -o remount,bind,ro "$mount_path"
+    findmnt -n -o OPTIONS --target "$mount_path" | tr ',' '\n' | grep -qx ro
+    ;;
+  stop)
+    if mountpoint -q "$mount_path"; then
+      umount "$mount_path"
+    fi
+    ;;
+  *)
+    echo "usage: $0 start|stop" >&2
+    exit 2
+    ;;
+esac

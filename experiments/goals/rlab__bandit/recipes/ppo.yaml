@@ -21,4 +21,3 @@ train:
 logging:
   wandb: true
   wandb_mode: online
-  wandb_artifact_storage_uri: CHECKPOINT_BUCKET_URI

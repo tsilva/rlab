@@ -1,0 +1,9 @@
+type: fleet
+name: b3
+placement: any
+blocks: 1
+ssh_config:
+  user: tsilva
+  identity_file: ~/.ssh/id_rsa
+  hosts:
+    - host.docker.internal

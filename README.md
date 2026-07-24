@@ -4,513 +4,193 @@
   **Reinforcement-learning workbench for training game agents**
 </div>
 
-rlab is a Python CLI for training, evaluating, replaying, and operating reinforcement-learning game agents. It is built around Stable Retro environments, Stable-Baselines3 actor-critic models, W&B artifacts, and queue-backed one-job GPU containers, so a researcher can move from a checked-in experiment recipe to a replayable checkpoint without hand-wiring each step.
+rlab turns checked-in goals and recipes into portable, reproducible training
+runs. Research code sees one container and does not contain provider-specific
+scheduling logic. dstack places that container on a local GPU, spot instance,
+or explicitly authorized on-demand machine; Modal evaluates immutable
+checkpoints independently.
 
-The normal workflow is to install the CLI once with `./install.sh`, then use `rlab` commands directly from the repo root. Do not wrap the examples below in `uv run`; the installed tool owns its runtime environment.
+## Architecture
+
+| Concern | Authority |
+| --- | --- |
+| Provisioning, placement, logs, cancellation, interruption retries | dstack |
+| Run, attempt, lease, promotion, and terminal state | private control R2 |
+| Evaluation intents, results, evidence, and videos | private eval R2 |
+| Training and evaluation metrics | one W&B run |
+| Downloadable checkpoints and public run index | public model R2 |
+| Temporary event buffering | SQLite WAL in the training container |
+
+One supervisor inside the training container is the only W&B process. The
+learner performs no network I/O: it emits local metric and checkpoint events
+and responds to a cooperative stop signal. The supervisor uploads and verifies
+checkpoints, dispatches Modal evaluations, observes accepted results, signals
+the learner at a safe boundary, and drains all frozen work before the task can
+succeed.
+
+dstack exit status alone never establishes scientific success. The
+authoritative terminal receipt must prove complete checkpoint/evaluation
+inventories, promotion, W&B delivery, and drain.
 
 ## Install
 
 ```bash
-RLAB_TAG=REPLACE_WITH_EXACT_RLAB_RELEASE_TAG
-git clone --branch "$RLAB_TAG" --depth 1 git@github.com:tsilva/rlab.git
+git clone git@github.com:tsilva/rlab.git
 cd rlab
 ./install.sh
-```
-
-Install the lazy dataset stack only when recording or inspecting Gymrec v3 data:
-
-```bash
-./install.sh --extra dataset
-# Add Minari export support:
-./install.sh --extra dataset-minari
-```
-
-If you are reinstalling after local changes:
-
-```bash
-./install.sh
-```
-
-`install.sh` exports exact constraints from the committed `uv.lock` and installs the
-`rlab` command as an editable uv tool. Re-running it preserves the locked dependency
-versions and does not modify tracked files.
-
-Refresh the forward Stable Retro and Mario runtimes explicitly when that is intended:
-
-```bash
-./refresh-runtimes.sh
-```
-
-The refresh command advances the package-specific cutoffs, updates `uv.lock`, keeps
-the user-level uv configuration in sync, and then reinstalls the tool.
-
-This repo uses uv's seven-day `exclude-newer` protection, with package-specific exceptions for the exact Stable Retro requirement and minimum Mario runtime recorded in `uv-tool.toml`, `pyproject.toml`, `uv.lock`, and the user-level uv config used by `uv tool install`.
-
-After installation, run commands as plain `rlab ...`:
-
-```bash
-rlab --help
 rlab validate
 ```
 
-Provision each external ROM once from the local source library (default `~/roms`):
+The project uses `uv`, a committed `uv.lock`, and a seven-day package-age gate.
+`stable-retro-turbo`, `supermariobrosnes-turbo`, and
+`breakout-turbo-env` have explicit forward-runtime exceptions recorded in
+`pyproject.toml` and `uv-tool.toml`.
+
+Register a local ROM without uploading it to source control:
 
 ```bash
 rlab rom sync --game SuperMarioBros-Nes-v0
-rlab rom sync --game MsPacman-Atari2600-v0
 rlab rom status --json
 ```
 
-`rom sync` validates the provider-approved ROM identity without importing a directory, uploads the
-immutable bytes and manifest to private R2, and pins the game pointer. Queue submission pins that
-exact manifest before hashing the request. Local, Beast, and Modal execution then use verified
-content-addressed caches and pass a direct `rom_path` to the provider. Warm caches can be populated
-explicitly with `rlab rom warm --game <game-id> --target all`; normal launch and evaluation paths
-also ensure their required entry automatically. `rlab import-roms` remains only for historical
-tooling and is never run by a container.
+Local dstack hosts use the hash-verified read-only ROM cache. Each Modal-backed
+run stages its exact ROM bytes and manifest to eval-private R2. ROMs, R2
+credentials, W&B credentials, and Modal credentials are never embedded in the
+image.
 
-## Run
-
-Start with the built-in ROM-free native-vector smoke environment:
+## Launch and observe
 
 ```bash
-rlab env inspect rlab:Bandit-v0
-rlab env preflight \
-  --goal-file experiments/goals/rlab__bandit/_goal.yaml \
-  --recipe-file experiments/goals/rlab__bandit/recipes/ppo.yaml
-```
-
-Run its complete queue-backed local training and checkpoint-evaluation path:
-
-```bash
-rlab experiment launch --from-head \
-  --goal-file experiments/goals/rlab__bandit/_goal.yaml \
-  --recipe-file experiments/goals/rlab__bandit/recipes/ppo.yaml \
-  --machine local-macbook \
-  --checkpoint-eval-backend local \
-  --wait terminal \
-  --json \
-  --set recipe_id=local-smoke \
-  --set campaign_id=local-smoke \
-  --set logging.wandb=false \
-  --set logging.wandb_mode=disabled \
-  --set logging.wandb_artifact_storage_uri=
-```
-
-Breakout has one shared goal and recipe. Breakout Turbo is the ROM-free default;
-select Stable Retro Turbo atomically for training and checkpoint evaluation, or
-override the provider when evaluating or playing an existing policy:
-
-```bash
-rlab experiment launch --from-head \
-  --goal-file experiments/goals/Breakout-Atari2600-v0/_goal.yaml \
-  --recipe-file experiments/goals/Breakout-Atari2600-v0/recipes/ppo.yaml \
-  --env-provider stable-retro-turbo \
-  --machine beast-3
-rlab eval run <checkpoint> --env-provider stable-retro-turbo
-rlab play <checkpoint> --env-provider stable-retro-turbo
-```
-
-`rlab:Bandit-v0` has no renderer, but its transition telemetry remains available in the player
-dashboard. Use `rlab play <checkpoint> --debug` to start paused for interactive stepping.
-
-For a ROM-backed Mario smoke run, use the same queue path with explicit smoke overrides:
-
-```bash
-rlab experiment launch --from-head \
+rlab experiment launch \
   --goal-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml \
   --recipe-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/ppo.yaml \
-  --machine local-macbook \
-  --checkpoint-eval-backend none \
-  --wait terminal \
-  --json \
-  --set recipe_id=local-mario-smoke \
-  --set campaign_id=local-mario-smoke \
-  --set train.timesteps=512 \
-  --set train.environment.env_config.n_envs=1 \
-  --set logging.wandb=false \
-  --set logging.wandb_mode=disabled \
-  --set logging.wandb_artifact_storage_uri=
+  --seed 123 \
+  --run-description "Mario Level1-1 PPO seed 123" \
+  --compute local \
+  --target b3 \
+  --max-duration 48h \
+  --json
 ```
 
-Inspect the resulting launch and `result.json`:
+`launch` requires a clean, pushed source revision and waits for its verified
+immutable training image and source-specific Modal deployment. It returns the
+rlab run ID, attempt ID, dstack task, selected compute offer, source/image
+digest, W&B URL, and public run-index URL.
+
+Compute policy:
+
+- `auto` uses an idle compatible local host first.
+- `spot` requires finite `--max-price` and `--max-cost-usd`.
+- without a cloud budget, `auto` waits for local capacity.
+- `on-demand` also requires `--allow-on-demand`.
+- every task requires a finite maximum duration.
+
+Observe or control one logical run:
 
 ```bash
-rlab experiment status --machine local-macbook --json
+rlab experiment status --run <rlab-run-id> --json
+rlab experiment follow --run <rlab-run-id>
+rlab experiment wait --run <rlab-run-id> --until terminal --timeout 48h
+rlab experiment logs --run <rlab-run-id> --tail 200
+rlab experiment cancel --run <rlab-run-id>
+rlab experiment retry --run <rlab-run-id>
 ```
 
-Queue comparable experiments from checked-in recipe files:
+Retry preserves the logical run ID and creates a new attempt ID. It requires a
+terminal prior dstack attempt, an expired writer lease, and a 30-second
+quiescence interval. A run whose learner already finished resumes in
+drain-only mode and cannot retrain.
 
-```bash
-rlab experiment launch --from-head \
-  --goal-file experiments/goals/<goal-slug>/_goal.yaml \
-  --recipe-file experiments/goals/<goal-slug>/recipes/<recipe>.yaml \
-  --machine beast-3 \
-  --runtime-image-ref-file rlab-train-image.json
+For a short B3 integration smoke, use the checked-in
+`experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/dstack-smoke.yaml`
+recipe. Repeatable `--set KEY=VALUE` ablations are composed, validated, and
+included in the immutable portable recipe hash; use a checked-in leaf recipe
+for durable or shared variants.
+
+## Checkpoints and playback
+
+Periodic and final checkpoints are immutable:
+
+```text
+runs/<run-id>/checkpoints/<step>-<sha256>/model.zip
+runs/<run-id>/checkpoints/<step>-<sha256>/manifest.json
+runs/<run-id>/index.json
 ```
 
-For short-lived queue-backed ablations, compose the checked-in goal and recipe and
-apply repeatable Hydra/OmegaConf dotlist overrides from the CLI:
+The public index is mutable through ETag compare-and-swap and served with
+`Cache-Control: no-store`; checkpoint objects are immutable and cacheable.
+Playback needs no private credentials:
 
 ```bash
-rlab experiment launch --from-head \
-  --goal-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml \
-  --recipe-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/ppo.yaml \
-  --machine beast-3 \
-  --set recipe_id=lr2e4 \
-  --set campaign_id=Level1-1-lr2e4 \
-  --set train.backend.config.learning_rate=2e-4 \
-  --seed 1
+rlab play --run <rlab-run-id>
+rlab play <local-checkpoint>
+rlab play hf://<owner>/<repository>
 ```
 
-Overrides are recorded in the queued recipe payload and W&B config as
-`recipe_overrides`. Give each comparable variant a distinct `recipe_id` so
-leaderboards do not mix sweep arms. Each submission receives one generated
-`bx<16 hex>` `batch_id`, shared by all of its seeds and used as the W&B group.
-Use optional `campaign_id` to connect related submissions over time.
+W&B contains metrics, hashes, metadata, and R2 URLs only. Model bytes, videos,
+episode evidence, ROMs, and recovery journals remain in R2.
 
-### Gameplay datasets
+## Evaluation and early stop
 
-`rlab dataset` owns the current Gymrec v3 recording and observation lifecycle. It writes
-lossless RGB video while keeping provider-native actions, rewards, boundaries, infos, seeds,
-environment contracts, and approved policy provenance. Local appends use a recoverable atomic
-swap; Hub appends use an expected-parent commit. Existing image-backed and video-backed v3 trees
-remain readable, while new recordings use lossless video.
+Every ready periodic checkpoint and the natural final checkpoint is evaluated
+against the immutable goal-owned episode manifest. Modal validates the
+checkpoint, goal, recipe, environment, protocol, and episode-manifest hashes.
+Acceptance fails fast on the first valid failed episode and requires all 100
+episodes to pass.
 
-Human recording opens the same loopback browser dashboard as policy playback. Focus the game view
-to send controls; focus loss, a stale input heartbeat, or loss of the controlling browser pauses or
-ends input instead of reusing stuck keys. Use `--ui pygame` for the compatibility window, or
-`--no-open` to print the capability-bearing dashboard URL without opening it automatically.
+The supervisor polls results every two seconds. An accepted result requests
+learner stop within ten seconds; the learner stops cooperatively at a safe
+on-policy boundary and saves a final checkpoint. The ready set is then frozen,
+every member reaches a terminal eval state, and the lowest-step accepted
+checkpoint is promoted exactly once.
 
-External SB3 checkpoints are Python-executable content. Rlab privately stages and hashes the full
-resolved model closure, displays the ambient credential/authority risk, and requires approval for
-that exact invocation before deserialization. Set `RLAB_MODEL_SOURCE_ALLOWLIST` in the process
-environment or local `.env` to a comma-separated list of case-sensitive shell-style source patterns
-to skip the prompt for sources you control, for example
-`RLAB_MODEL_SOURCE_ALLOWLIST='hf://tsilva/*,tsilva/*'` for Hugging Face and W&B namespaces.
-Allowlisting skips only interactive approval: immutable resolution, private closure staging, archive
-preflight, and byte-integrity verification still run. Dataset verification establishes structure and
-media integrity; `--reexecute` additionally requires the exact provider contract and runtime bytes.
+## Goals, recipes, metrics, and reports
 
-Dataset recordings and exports are observation/reproduction artifacts. They are never accepted as
-checkpoint-promotion or research-goal evidence.
+- Active goals: `experiments/goals/`
+- Goal-local launchable recipes: each goal’s `recipes/`
+- Reusable presets: `experiments/recipes/_presets/`
+- Metric contract: `METRICS.md`
+- Hardware and dstack operations: `INSTANCES.md`
+- Control-plane units and templates: `ops/dstack/`
 
-If `rlab-train-image.json` is absent, omit `--runtime-image-ref-file`. `rlab experiment launch --from-head` pins committed HEAD in an isolated worktree and waits for its exact-source receipt. The receipt may reuse an immutable image when the content-addressed runtime inputs match a prior source state; it never falls back without that proof. The exact source, recipe composition, runtime fingerprint, runtime build source, and digest remain recorded.
-
-## Commands
+Useful commands:
 
 ```bash
-rlab validate                                      # validate goals, recipes, benchmarks, and machine config
-rlab env list                                      # list declared providers and environments without importing them
-rlab env inspect rlab:Bandit-v0
-rlab env preflight --goal-file experiments/goals/rlab__bandit/_goal.yaml --recipe-file experiments/goals/rlab__bandit/recipes/ppo.yaml
+rlab validate
+rlab env list
 rlab env inspect supermariobrosnes-turbo:SuperMarioBros-Nes-v0
-rlab env preflight --goal-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml --recipe-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/ppo.yaml
-rlab experiment launch --from-head --goal-file experiments/goals/<goal-slug>/_goal.yaml --recipe-file experiments/goals/<goal-slug>/recipes/<recipe>.yaml --machine beast-3 --json
-rlab eval run --game <GameId> --policy random --episodes 2 --max-steps 600
-rlab play <wandb-run-url>                             # promoted model, else newest API-visible checkpoint/final vN
-rlab play <run-name>                                  # same resolution for a unique historical display name
-rlab play <entity>/<project>/rlab-<run-id>-checkpoint:latest
-rlab play hf://tsilva/NES-SuperMarioBros_Level1-2_gray84-hudcrop-stack4-basic_ppo
-rlab play <checkpoint> --debug --no-open             # start paused; print both browser URLs
-rlab play <checkpoint> --ui pygame                   # temporary native compatibility UI
-rlab dataset record human-play --env-id SuperMarioBros-Nes-v0 --provider supermariobrosnes-turbo --agent human
-rlab dataset record mario-level1-1 --env-id SuperMarioBros-Nes-v0 --provider supermariobrosnes-turbo --agent random --episodes 1 --headless
-rlab dataset list mario-level1-1
+rlab env preflight \
+  --goal-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml \
+  --recipe-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/ppo.yaml
+rlab leaders runs --goal SuperMarioBros-Nes-v0/Level1-1 --min-seeds 3
+rlab leaders checkpoints --goal SuperMarioBros-Nes-v0/Level1-1 --limit 1 --json
+rlab reports plan --goal SuperMarioBros-Nes-v0/Level1-1
+rlab reports sync --goal SuperMarioBros-Nes-v0/Level1-1
+rlab reports verify --goal SuperMarioBros-Nes-v0/Level1-1
+rlab benchmark list
+```
+
+## Datasets and model release
+
+`rlab dataset` records and verifies Gymrec v3 gameplay data with provider-native
+actions, rewards, boundaries, seeds, environment contracts, and approved policy
+provenance:
+
+```bash
+rlab dataset record mario-level1-1 \
+  --env-id SuperMarioBros-Nes-v0 \
+  --provider supermariobrosnes-turbo \
+  --agent human
 rlab dataset verify mario-level1-1
 rlab dataset play mario-level1-1 --episode 1
-rlab dataset video mario-level1-1 replay.mp4
-rlab dataset upload mario-level1-1 owner/repository
-rlab dataset adopt /path/to/finalized-gymrec-group imported-recording
-rlab dataset export-minari mario-level1-1 owner/mario-level1-1-v0
-rlab play <checkpoint> --attribution gradcam
-rlab play <checkpoint> --attribution occlusion --attribution-interval 12
-rlab experiment status --machine beast-3 --json
-rlab experiment follow --run <run-id> --jsonl
-rlab experiment wait --run <run-id> --until terminal --timeout 12h
-rlab experiment cancel --run <run-id> --wait
-rlab experiment retry-finalization --run <run-id>
-rlab experiment logs --run <run-id> --follow
-rlab leaders runs --goal <goal-slug> --min-seeds 3
-rlab leaders checkpoints --goal <goal-slug>
-rlab leaders checkpoints --goal <goal-slug> --limit 1 --json
-rlab reports plan --goal <goal-slug>
-rlab reports sync --goal <goal-slug>
-rlab reports verify --goal <goal-slug>
-rlab fleet drain --machine beast-3
-rlab fleet resume --machine beast-3
-rlab fleet service status --json
-rlab eval modal status
-rlab benchmark list
-rlab benchmark run mario-env-throughput-l11 --dry-run
+rlab dataset upload mario-level1-1 <owner/repository>
 ```
 
-If a Hub repository contains incompatible physical schemas, `rlab dataset list` exposes each
-read-only virtual source as `hf://owner/repository#group=<feature-id>`. Select one group for
-playback, verification, export, or explicit adoption rather than implicitly merging schemas.
+External SB3 checkpoints are Python-executable content. rlab stages and hashes
+the complete model closure and requires approval before deserialization unless
+the exact source matches `RLAB_MODEL_SOURCE_ALLOWLIST`.
 
-The command surface is intentionally one binary:
-
-- `rlab experiment launch` is the only supported training-run entrypoint. It enqueues a PostgreSQL run and
-  runs the same immutable Docker supervisor locally (`local-macbook`) or over SSH (Beast hosts).
-  `python -m rlab.train` is an internal learner entrypoint reserved for that supervisor, tests,
-  and explicitly labelled W&B-disabled core microbenchmarks.
-- `rlab eval run` runs local/scripted or explicit-model evaluation. Queue-backed experiments evaluate saved checkpoints asynchronously; Modal uses bounded remote CPU workers, while explicit `rlab eval run` stays local.
-- `rlab play` replays a local model path, W&B checkpoint artifact, or Hugging Face model repo in a
-  loopback browser workbench. It opens a play window with the game, controls, and trajectory
-  scrubber plus a synchronized stats window with every analysis panel loaded. Both windows keep the
-  game, policy input, sampled decision, rewards, action histogram, events, and live numeric infos on
-  one transition sequence. Panels can move between windows and the game can enter fullscreen
-  without creating another environment. One browser workspace holds the control lease; other
-  workspaces remain synchronized observers.
-  The bounded latest-frame stream uses binary PNG frames while reliable commands and telemetry use
-  JSON over the same authenticated WebSocket. `--ui pygame` preserves the previous viewer during
-  rollout. A model source is always explicit; bare `rlab play` does not guess from stale local
-  smoke outputs.
-- `rlab env` lists static provider contracts, inspects one qualified environment, or explicitly
-  preflights a materialized recipe against the installed native runtime.
-- `rlab experiment` launches and observes training runs. `rlab fleet` owns infrastructure and queue-schema maintenance.
-- `rlab leaders` queries W&B for run/recipe winners and best evaluated checkpoints.
-- `rlab reports` plans, explicitly synchronizes, and verifies source-controlled W&B reports.
-- `rlab benchmark` runs named local-smoke and throughput profiles with executable gates.
-
-`rlab env list` and `rlab env inspect` are static and do not import provider modules or access
-ROMs. `rlab env preflight` is an explicit, recipe-backed behavioral probe: it constructs the same
-native provider used by training, checks vector reset/step and visible masked-reset preservation,
-then binds and steps the normal rlab runtime. Its report separates declared configuration,
-runtime-observed evidence, and hidden reset invariants backed by the pinned provider contract;
-it does not claim that emulator or RNG internals are black-box observable. Pass `--json` for one
-versioned report on stdout; provider diagnostics are routed to stderr.
-
-Maintenance commands are intentionally outside the normal research loop:
-
-- `rlab fleet queue reset-schema --dry-run` previews an administrative queue-schema export and reset; rerun without `--dry-run` only when that destructive operation is intended.
-
-### Provider-owned action tables
-
-Environment action selection belongs in `env_args.use_restricted_actions`:
-
-```yaml
-env_args:
-  use_restricted_actions: basic
-```
-
-The value may be a Stable Retro built-in mode (`all`, `filtered`, `discrete`,
-or `multi_discrete`), a preset from the selected game provider's packaged
-`metadata.json`, or an inline exact table of controller-label combinations.
-Mario runtime 0.4.4 provides the canonical `basic`, `standard`, `right-jump`,
-and `basic-start` presets; `standard` extends `basic` with `DOWN` for
-pipe-dependent levels.
-rlab records the resolved ordered table, action meanings, preset, and semantic
-hash in environment/run metadata and rejects provider overrides whose resolved
-hash differs. Historical `env_args.action_set` and Mario task-level action-set
-values are translated before environment construction and identity hashing.
-
-## Research Loop
-
-Active research contracts live under `experiments/goals/`. Each goal owns its launchable
-`recipes/*.yaml` leaves; those leaves may inherit reusable configuration-only defaults from
-`experiments/recipes/_presets/`. A recipe from one goal cannot be launched against another goal.
-For current Mario work, read the goal's `_goal.yaml` before choosing recipes, caps, metrics, or
-promotion criteria.
-
-Goals may own a finite named reward catalog. Launchable recipes pin one `reward_shape`, and the
-existing dotlist override can select another complete registered shape without mutating individual
-reward fields:
-
-```yaml
-reward_shapes:
-  program_kind: mario-v1
-  default: score-v1
-  definitions:
-    score-v1: { ... }
-    score-step-0p01-v1: { ... }
-```
-
-```bash
-rlab experiment launch --goal-file <goal> --recipe-file <recipe> \
-  --set reward_shape=score-step-0p01-v1 --run-description "Mario step-cost comparison"
-```
-
-Catalog-backed runs record the readable key and executable semantic hash. Raw
-`train.environment.task.reward.*` overrides are rejected so a run always names a complete shape.
-
-Train recipes are validated against the queue-backed schema before enqueue. Extra research metadata is preserved, but required launch, naming, W&B, seed, selection, and train-config fields must be present and well-formed.
-
-For new queue-backed runs, `goal.eval` is the only acceptance source. Every periodic checkpoint and
-the natural final model receive one immutable 100-episode acceptance manifest. The Modal worker
-stops on the first valid failed episode; the first complete 100/100 result is atomically promoted and
-creates the learner stop command. Workers never open W&B or queue tables. W&B is the visibility
-layer, R2 is permanent byte/evidence storage, and PostgreSQL is durable orchestration state plus a
-transient telemetry mailbox.
-
-The Docker launch owns scarce training capacity. It becomes successful only after required R2
-handoffs and the final Neon watermark are acknowledged, then releases the GPU without waiting for
-W&B. The logical run remains `finalizing` while Modal evaluation, promotion, and Fleet-owned W&B
-publication finish. `training_finished_at` reports the launch boundary;
-`finished_at` reports overall completion. Exhausted post-train retries produce
-`finalization_failed` without changing the successful launch, and
-`rlab experiment retry-finalization --run <id>` reopens only that phase. W&B cursor
-confirmation is bounded: submitted mailbox batches that remain unconfirmed for two minutes, or
-are missing from a terminal W&B run, exhaust three finalization attempts instead of polling
-forever. The retry command first rechecks W&B, then replays only residual unconfirmed batches;
-that explicit repair is at-least-once and can duplicate W&B history if frames persisted without
-their summary cursor.
-
-Every verified checkpoint/final/interrupted announcement is published while training or
-finalization is active, independently of evaluation. Fleet records a publication receipt only after
-W&B's artifact API exposes the exact hashes, storage URIs, aliases, collection, and concrete `vN`
-membership. `rlab play <wandb-run-url>` prefers the highest confirmed promotion revision; before a
-promotion exists it selects the newest confirmed playable announcement, with final models winning
-same-step ties. It returns the immutable `vN`, never a moving alias, and reports a clean pending
-message before the first membership is visible.
-
-The accepted checkpoint itself becomes the promoted model, even if the learner advances slightly
-before observing the stop. Its artifact publication receives immutable `step-<n>` plus `promoted`
-aliases; later results cannot replace the committed promotion revision. A run is reported
-successful only after W&B remotely confirms `finished`, final cursors, acceptance metrics, every
-availability receipt, and the current promotion receipt.
-
-`rlab experiment status --run <id> --json` reports the launch, evaluation, publication,
-incident, R2 checkpoint, and immutable W&B artifact projections; `artifact_status=playable`
-means the promoted checkpoint is ready while historical backfill continues. Modal-backed enqueue fails closed when the
-fleet evaluator's latest pass is stale or unsuccessful. Projection failures retry with backoff and
-are isolated to their producing run; after correcting a persistent failure, reset only that run
-with `rlab experiment retry-finalization --run <run-id>`.
-
-To ask for the current best evaluated checkpoint for a goal, query the checkpoint leaders with a
-single-row limit:
-
-```bash
-rlab leaders checkpoints --goal Level1-1 --limit 1 --json
-```
-
-`leaders checkpoints` returns evaluated checkpoint rows already sorted by the checkpoint promotion
-order, so `--limit 1` is the canonical best-checkpoint query. Use `leaders runs` separately when
-the question is about training/recipe winners rather than the checkpoint artifact to play or promote.
-`leaders runs` uses the current primary goal metric by default for fast W&B queries.
-
-Mario W&B report definitions live in
-`experiments/goals/SuperMarioBros-Nes-v0/_reports.yaml`. Preview the deterministic local plan,
-explicitly synchronize it, and verify the saved report structure with:
-
-```bash
-rlab reports plan
-rlab reports sync
-rlab reports verify
-```
-
-Reports are live W&B queries; new train and evaluation data appears without another sync. Sync is
-needed only when report declarations, goal contracts, or the set of goals changes. Generated report
-content is source-owned, so direct W&B edits are replaced by the next sync.
-
-## Publish a Policy
-
-Policies publish under `tsilva` with a generated repository identity:
-
-```text
-<game-family>_<goal>_<policy-variant>_<algorithm>
-```
-
-For example:
-
-```text
-tsilva/NES-SuperMarioBros_Level1-1_gray84-hudmask-stack4-basic_ppo
-```
-
-The game family comes from rlab's provider-neutral registry, the policy variant comes from the
-saved observation/action contract, and the algorithm comes from checkpoint metadata. Provider,
-run, recipe, seed, runtime, and environment hash remain in `model_metadata.json` and
-`release_manifest.json`; they are not manually encoded in the repository name.
-
-Use the project `$upload-checkpoint` skill for releases. Before any Hub mutation, preview the exact
-identity with the repository-owned release helper:
-
-```bash
-uv run python scripts/prepare_huggingface_release.py \
-  --goal-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml \
-  --model-metadata runs/<run>/checkpoints/<checkpoint>.metadata.json \
-  --identity-only
-```
-
-The complete workflow requires stochastic evaluation evidence, a browser-safe `replay.mp4`, the
-matching public YouTube preview, and the exact eight-file Hugging Face release bundle. The helper
-rejects unknown families, inconsistent model classes, manual names, non-portable paths, extra
-files, and invalid hashes before upload.
-
-`README.md` is generated from the same manifest, metadata, and evaluation evidence as the release;
-it is not a separate hand-maintained input. After publishing and tagging a release, audit the live
-Hub state through the API:
-
-```bash
-uv run python scripts/audit_huggingface_release.py \
-  tsilva/NES-SuperMarioBros_Level1-1_gray84-hudmask-stack4-basic_ppo \
-  --revision v1
-```
-
-
-## Fleet
-
-Queue-backed training is the supported GPU workflow. Every `rlab experiment launch` run
-names one registered machine. Three launchd-supervised Mac controllers own
-machine reconciliation, evaluation/promotion, and isolated per-run W&B
-publication. They poll PostgreSQL every two seconds; runner machines remain
-SSH/Docker-only.
-
-```bash
-rlab fleet service install
-rlab fleet service watch
-rlab fleet service status --json
-rlab experiment status --machine beast-3 --json
-```
-
-`rlab fleet service watch` is the read-only scheduler dashboard: it separates launchd health from
-authoritative workload state and shows active phases, automatic retries, eval-load admission waits,
-and only conditions that still block an active run. Use `--once` for one human snapshot, `--plain` for an
-append-only stream, or `--json` for one structured snapshot. Use `rlab fleet service logs --follow`
-for raw service events and `rlab experiment status ...` for full run evidence.
-
-Hard fleet capacity and exact machine configuration come from
-`experiments/machines.yaml`. `INSTANCES.md` is the authoritative operator guide
-for service operation, job status, host setup, cleanup, hardware, concurrency,
-and beast host recommendations.
-
-## Notes
-
-- Python is pinned to `==3.14.*`; dependency resolution and lock state are managed by `uv`.
-- The installed console command is `rlab`; examples should not use `uv run`.
-- Runtime support is pinned for macOS arm64 and Linux x86_64 with `stable-retro-turbo`.
-- Stable Retro Turbo and Mario Turbo receive only verified direct ROM paths. Provision with
-  `rlab rom sync`; filenames and cache paths are operational and do not affect environment identity.
-- Every queue-backed training recipe must include a non-empty `description`; `rlab experiment launch` records it as the run description.
-- Queue-backed W&B run names are `<batch_id>-<recipe_id>-s<effective_seed>-<utc>` and use an opaque `rlab-...` run id. Projects identify canonical game families, while config/tags identify the goal, recipe, provider, campaign, and exact environment hash.
-- Canonical W&B projects are `SuperMarioBros-Nes-v0` for SMB1, `SuperMarioBros3-Nes-v0` for SMB3, `Breakout-Atari2600-v0` for ALE, Breakout Turbo, or Stable Retro Breakout, and `MsPacman-Atari2600-v0` for ALE or Stable Retro Ms. Pac-Man. An explicit `wandb_project` still overrides this routing; unknown environments use their provider-local environment id.
-- New W&B model artifact collections and R2/S3 object paths use the immutable run id. Playback continues to resolve historical display-name artifacts and the legacy `breakout` and `ms_pacman` projects. Run-level playback selects a concrete API-visible `vN`: highest promotion revision first, otherwise the newest playable checkpoint/final/interrupted artifact.
-- Training logs to W&B and uploads model artifacts unless the recipe sets
-  `logging.no_wandb_artifacts: true` (or `--set logging.no_wandb_artifacts=true`).
-- Queue-backed train jobs are profileless by default and should reference immutable runtime image digests.
-- Modal checkpoint acceptance is configured in `experiments/modal_eval.yaml`, uses PostgreSQL as
-  its only wait queue, and dispatches at most 10 evaluation calls concurrently. Use
-  `rlab eval modal smoke-local` for the credential-free integration path.
-- The train-image workflow publishes the exact immutable image receipt immediately after the image
-  exists, then deploys and startup-probes the digest-specific Modal evaluator and publishes a
-  separate Modal readiness receipt. Local and no-eval submissions do not wait for Modal. Modal-backed
-  submissions also run the live schema, capacity, asset, and deployment preflight before inserting
-  queue rows. Use `rlab eval modal preflight --runtime-image-ref <digest-ref> --game <game-id>` for
-  operator diagnosis, `--checkpoint-eval-backend local` for the explicit local fallback, or
-  `--checkpoint-eval-backend none` for a training-only run that cannot establish promotion or
-  acceptance. A goal may declare this training-only behavior as its checked-in default.
-- Set `WANDB_API_KEY` for online W&B. For R2/S3-backed reference artifacts, set
-  `CHECKPOINT_BUCKET_URI` or configure `logging.wandb_artifact_storage_uri` in the recipe,
-  along with the required `AWS_*` credentials.
-- Set `WORKER_MAILBOX_DATABASE_URL` to a pooled TLS Neon URL for the restricted mailbox role.
-  Run `rlab fleet queue setup --worker-mailbox-role <role>` as the control-plane role to grant only the
-  three authenticated worker procedures; worker attempt tokens are generated and expired by Fleet.
-- Acceptance evaluation captures no video and performs no direct W&B operation. Release publishing
-  remains responsible for the representative replay.
-- Keep generated checkpoints, logs, videos, W&B files, caches, and scratch outputs out of source control.
-- Local eval outputs are written under `runs/local_evals/<run-name>/`.
-
-## License
-
-No license file is present in this repository.
+Published model releases use Hugging Face model cards and include a
+representative `replay.mp4` when the policy has visual behavior. Generated
+artifacts belong under ignored `runs/`, `logs/`, and `models/` directories,
+never source control.
