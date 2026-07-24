@@ -1522,9 +1522,10 @@ class RunSupervisor:
 
     def _finish_wandb(self) -> int:
         high_water = self._wandb_high_water()
-        if self.projector is not None:
-            self.projector.close()
-            self.projector = None
+        projector = self.projector
+        self.projector = None
+        if projector is not None:
+            projector.close(timeout_seconds=WANDB_DRAIN_TIMEOUT_SECONDS)
         return high_water
 
     def _terminal_inventory(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:

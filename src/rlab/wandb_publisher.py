@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -31,8 +32,6 @@ from rlab.wandb_utils import (
     load_wandb_env,
     resolve_wandb_namespace,
 )
-
-WANDB_FINISH_TIMEOUT_SECONDS = 300.0
 
 
 def _write_wandb_identity(run, run_dir: str) -> None:
@@ -103,10 +102,6 @@ def _start_wandb(args, *, run_dir: str, config):
             mode=args.wandb_mode,
             id=str(args.wandb_run_id),
             resume="allow",
-            settings=wandb.Settings(
-                finish_timeout=WANDB_FINISH_TIMEOUT_SECONDS,
-                finish_timeout_raises=True,
-            ),
         )
     )
 
@@ -160,19 +155,45 @@ class WandbProjector:
                 tags=tags,
                 config=dict(train_config) if allow_create else None,
                 settings=wandb.Settings(
-                    finish_timeout=WANDB_FINISH_TIMEOUT_SECONDS,
-                    finish_timeout_raises=True,
                     x_update_finish_state=update_finish_state,
                 ),
             )
         )
         return cls(run)
 
-    def close(self) -> None:
+    def close(self, *, timeout_seconds: float | None = None) -> None:
         if self.run_dir is not None:
             _write_wandb_identity(self.run, self.run_dir)
-        if self.run is not None:
+        if self.run is None:
+            return
+        if timeout_seconds is None:
             self.run.finish()
+            return
+        if timeout_seconds <= 0:
+            raise ValueError("W&B finish timeout must be positive")
+        errors: list[BaseException] = []
+        finished = threading.Event()
+
+        def finish() -> None:
+            try:
+                self.run.finish()
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                finished.set()
+
+        thread = threading.Thread(
+            target=finish,
+            name="rlab-wandb-finish",
+            daemon=True,
+        )
+        thread.start()
+        if not finished.wait(timeout_seconds):
+            raise TimeoutError(
+                f"W&B did not finish uploading within {timeout_seconds:g} seconds"
+            )
+        if errors:
+            raise errors[0]
 
 
 def _publish_frame(run, row: Mapping[str, Any], *, args) -> None:
